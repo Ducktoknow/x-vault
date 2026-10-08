@@ -118,20 +118,33 @@ def test_signed_template_builds_with_valid_video_branch(monkeypatch):
     workflow = build_video_shortcut()
     actions = workflow["WFWorkflowActions"]
     names = [a["WFWorkflowActionIdentifier"] for a in actions]
-    assert len(actions) == 13
+    assert len(actions) == 20
     assert names[1] == "is.workflow.actions.downloadurl"
     assert names[6] == "is.workflow.actions.downloadurl"
-    assert names[7] == "is.workflow.actions.documentpicker.save"
+    assert names[7] == "is.workflow.actions.properties.files"
+    assert names[10] == "is.workflow.actions.savetocameraroll"
+    assert names[13] == "is.workflow.actions.documentpicker.save"
     items = actions[1]["WFWorkflowActionParameters"]["WFJSONValues"]["Value"]["WFDictionaryFieldValueItems"]
     keys = [i["WFKey"]["Value"]["string"] for i in items]
     assert keys == ["url", "video_action"]
     assert items[1]["WFValue"]["Value"]["string"] == "download"
     assert actions[1]["WFWorkflowActionParameters"]["WFURL"].startswith("https://")
-    control = [actions[i]["WFWorkflowActionParameters"]["WFControlFlowMode"] for i in (4, 9, 12)]
-    assert control == [0, 1, 2]
+    outer_modes = [actions[i]["WFWorkflowActionParameters"]["WFControlFlowMode"] for i in (4, 16, 19)]
+    inner_modes = [actions[i]["WFWorkflowActionParameters"]["WFControlFlowMode"] for i in (9, 12, 15)]
+    assert outer_modes == [0, 1, 2]
+    assert inner_modes == [0, 1, 2]
+    assert len({actions[i]["WFWorkflowActionParameters"]["GroupingIdentifier"] for i in (4,16,19)}) == 1
+    assert len({actions[i]["WFWorkflowActionParameters"]["GroupingIdentifier"] for i in (9,12,15)}) == 1
     assert actions[4]["WFWorkflowActionParameters"]["WFConditionalActionString"] == "download_ready"
-    assert actions[7]["WFWorkflowActionParameters"]["WFAskWhereToSave"] is True
-    assert actions[7]["WFWorkflowActionParameters"]["WFInput"]["Value"]["OutputUUID"] == actions[6]["WFWorkflowActionParameters"]["UUID"]
+    assert actions[9]["WFWorkflowActionParameters"]["WFCondition"] == 4
+    assert actions[9]["WFWorkflowActionParameters"]["WFConditionalActionString"] == "mp4"
+    assert actions[7]["WFWorkflowActionParameters"]["WFContentItemPropertyName"] == "File Extension"
+    assert actions[13]["WFWorkflowActionParameters"]["WFAskWhereToSave"] is True
+    assert actions[10]["WFWorkflowActionParameters"]["WFInput"]["Value"]["OutputUUID"] == actions[6]["WFWorkflowActionParameters"]["UUID"]
+    assert actions[13]["WFWorkflowActionParameters"]["WFInput"]["Value"]["OutputUUID"] == actions[6]["WFWorkflowActionParameters"]["UUID"]
+    assert "照片" in actions[11]["WFWorkflowActionParameters"]["WFNotificationActionBody"]
+    assert "文件" in actions[14]["WFWorkflowActionParameters"]["WFNotificationActionBody"]
+    assert "相册" in workflow["WFWorkflowName"]
     assert {(x["ActionIndex"], x["ParameterKey"]) for x in workflow["WFWorkflowImportQuestions"]} == {
         (0, "WFTextActionText"), (1, "WFURL")}
     assert "video" in workflow["WFWorkflowName"].lower() or "视频" in workflow["WFWorkflowName"]

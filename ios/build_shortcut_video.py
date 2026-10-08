@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Create an iPhone Shortcut: X and TikTok videos locally, X text to Notion.
+"""Create an iPhone Shortcut: MP4 videos to Photos, other files to Files.
+
+X and TikTok videos share one download flow; text/images stay in Notion.
 
 Reuses the previously proven X Vault share-sheet POST and import questions.
 Video download is opt-in via JSON video_action=download: older installed
@@ -8,8 +10,8 @@ Shortcuts continue to behave exactly as before.
 To share on iPhone, sign the generated file on your own Mac:
     python3 ios/build_shortcut_video.py
     shortcuts sign --mode anyone \\
-      --input ios/X-Vault-Video-Local.unsigned.shortcut \\
-      --output ios/X-Vault-Video-Local.shortcut
+      --input ios/X-Vault-Video-Photos.unsigned.shortcut \\
+      --output ios/X-Vault-Video-Photos.shortcut
 
 Do not put a real Render APP_TOKEN in this public template.
 """
@@ -58,26 +60,57 @@ def build_video_shortcut():
         WFURL=replacement_token(output_var(
             get_download_url["WFWorkflowActionParameters"]["UUID"], "Dictionary Value")),
         WFHTTPMethod="GET")
+    # Photos accepts ordinary MP4 downloads. Non-MP4 attachments may be
+    # ZIPs (multi-video/partial failure) or WebM/MKV; keep those in Files
+    # rather than trying to save a non-photo item to the Photos library.
+    file_type = action(
+        "properties.files", WFContentItemPropertyName="File Extension",
+        WFInput=direct_var(output_var(
+            download_video["WFWorkflowActionParameters"]["UUID"], "Contents of URL")))
+    file_type_text = action(
+        "gettext", WFTextActionText=replacement_token(output_var(
+            file_type["WFWorkflowActionParameters"]["UUID"], "File Extension")))
+    format_group = uid()
+    if_mp4 = action(
+        "conditional", WFControlFlowMode=0, WFCondition=4,
+        WFConditionalActionString="mp4",
+        WFInput={"Type": "Variable", "Variable": direct_var(output_var(
+            file_type_text["WFWorkflowActionParameters"]["UUID"], "Text"))},
+        GroupingIdentifier=format_group)
+    save_to_photos = action(
+        "savetocameraroll",
+        WFInput=direct_var(output_var(
+            download_video["WFWorkflowActionParameters"]["UUID"], "Contents of URL")))
+    photos_notification = action(
+        "notification", WFNotificationActionTitle="X Vault",
+        WFNotificationActionBody="✅ 视频已保存到 iPhone「照片」相册",
+        WFNotificationActionSound=True)
+    other_format = action("conditional", WFControlFlowMode=1,
+                          GroupingIdentifier=format_group)
     save_to_files = action(
         "documentpicker.save",
         WFInput=direct_var(output_var(
             download_video["WFWorkflowActionParameters"]["UUID"], "Contents of URL")),
         WFAskWhereToSave=True)
-    saved_notification = action(
+    files_notification = action(
         "notification",
         WFNotificationActionTitle="X Vault",
-        WFNotificationActionBody="✅ 视频已保存到 iPhone「文件」",
+        WFNotificationActionBody="ℹ️ 此文件不是 MP4，已存到「文件」（ZIP/WebM 等无法直接写入相册）",
         WFNotificationActionSound=True)
+    end_format = action("conditional", WFControlFlowMode=2,
+                        GroupingIdentifier=format_group)
 
     otherwise = action("conditional", WFControlFlowMode=1,
                        GroupingIdentifier=group)
     end_if = action("conditional", WFControlFlowMode=2,
                     GroupingIdentifier=group)
 
-    workflow["WFWorkflowName"] = "收藏到 X Vault · 视频存本机"
+    workflow["WFWorkflowName"] = "收藏到 X Vault · 视频存相册"
     workflow["WFWorkflowActions"] = [
         token_action, request, status, status_text, if_video,
-        get_download_url, download_video, save_to_files, saved_notification,
+        get_download_url, download_video, file_type, file_type_text,
+        if_mp4, save_to_photos, photos_notification,
+        other_format, save_to_files, files_notification, end_format,
         otherwise, getmessage, notify, end_if,
     ]
     # First two action indexes remain 0/1, so original import prompts work.
@@ -85,7 +118,7 @@ def build_video_shortcut():
 
 
 if __name__ == "__main__":
-    path = Path(__file__).resolve().parent / "X-Vault-Video-Local.unsigned.shortcut"
+    path = Path(__file__).resolve().parent / "X-Vault-Video-Photos.unsigned.shortcut"
     with path.open("wb") as out:
         plistlib.dump(build_video_shortcut(), out, fmt=plistlib.FMT_BINARY,
                       sort_keys=False)
