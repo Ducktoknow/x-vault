@@ -22,6 +22,7 @@ from typing import Literal
 from .archive import archive_post, parse_post_url
 from .video_flow import inspect_post, issue_ticket, claim_ticket
 from .notion import NotionPublisher
+from . import notion_config
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -63,6 +64,7 @@ def init_db():
         if "delivery" not in columns:
             db.execute("ALTER TABLE archives ADD COLUMN delivery TEXT NOT NULL DEFAULT 'archive'")
         db.execute("UPDATE archives SET status='queued' WHERE status='running'")
+        notion_config.init_tables(db)
 
 
 def row_dict(r):
@@ -78,6 +80,18 @@ def require_auth(request: Request):
     bearer = request.headers.get("Authorization", "")
     if not APP_TOKEN or not hmac.compare_digest(bearer, "Bearer " + APP_TOKEN):
         raise HTTPException(status_code=401, detail="请先填写个人 API Token")
+
+
+def notion_credentials():
+    """Resolve saved single-user Notion token; legacy env settings still work."""
+    with conn() as db:
+        saved = notion_config.read_settings(db)
+        if saved:
+            token = notion_config.decrypt_token(APP_TOKEN, saved["token_encrypted"])
+            return token, saved["page_id"], "saved"
+    if NOTION_TOKEN and NOTION_PARENT_PAGE_ID:
+        return NOTION_TOKEN, NOTION_PARENT_PAGE_ID, "manual"
+    return None, None, "none"
 
 
 def process_one(tweet_id):
@@ -100,7 +114,8 @@ def process_one(tweet_id):
                                        use_ytdlp_fallback=os.getenv("YTDLP_X_FALLBACK", "true").lower() == "true",
                                        metadata_only=metadata_only)
                 messages += archive.get("errors") or []
-                if NOTION_TOKEN and NOTION_PARENT_PAGE_ID:
+                notion_token, notion_parent, notion_mode = notion_credentials()
+                if notion_token and notion_parent:
                     try:
                         def remember_created_page(page_url):
                             nonlocal notion_url
@@ -110,11 +125,13 @@ def process_one(tweet_id):
                                            (page_url, int(time.time()), tweet_id))
 
                         if not notion_url:
-                            notion_url, warnings = NotionPublisher(NOTION_TOKEN, NOTION_PARENT_PAGE_ID).publish(
-                                archive, Path(storage) / "archives" / tweet_id,
-                                "" if ephemeral else PUBLIC_BASE_URL, row["share_key"],
-                                on_created=remember_created_page, ephemeral=ephemeral,
-                                metadata_only=metadata_only)
+                            def send_to_notion(access_token):
+                                return NotionPublisher(access_token, notion_parent).publish(
+                                    archive, Path(storage) / "archives" / tweet_id,
+                                    "" if ephemeral else PUBLIC_BASE_URL, row["share_key"],
+                                    on_created=remember_created_page, ephemeral=ephemeral,
+                                    metadata_only=metadata_only)
+                            notion_url, warnings = send_to_notion(notion_token)
                             messages += warnings
                     except Exception as exc:
                         messages.append("Notion 同步异常：" + str(exc))
@@ -199,10 +216,16 @@ def shortcut_result(row):
 
 
 @app.post("/api/shortcut/save", dependencies=[Depends(require_auth)])
-async def shortcut_save(body: ShortcutInput):
+async def shortcut_save(body: ShortcutInput, request: Request):
     """One-call iOS share sheet API. Never report success until Notion confirms."""
-    if not NOTION_TOKEN or not NOTION_PARENT_PAGE_ID:
-        return {"status": "failed", "message": "⚠️ 尚未配置 Notion，请先在 Render 配置 Notion Token 和页面 ID"}
+    notion_token, notion_parent, _ = notion_credentials()
+    if not notion_token or not notion_parent:
+        # Configuration guidance is public, but never put credentials in links.
+        setup_url = str(request.url_for("notion_setup"))
+        if request.headers.get("x-forwarded-proto", "").lower() == "https" and setup_url.startswith("http://"):
+            setup_url = "https://" + setup_url[len("http://"):]
+        return {"status": "setup_required", "message": "尚未连接 Notion，可打开引导页面完成一次性配置",
+                "setup_url": setup_url}
     match = re.search(r"https?://(?:www\.|mobile\.)?(?:x\.com|twitter\.com)/[^\s/]+/status/\d+[^\s]*", body.url, re.I)
     try:
         tweet_id, canonical = parse_post_url(match.group(0) if match else body.url)
@@ -235,6 +258,52 @@ async def shortcut_save(body: ShortcutInput):
         if time.monotonic() >= deadline:
             return shortcut_result(current)
         await asyncio.sleep(1)
+
+
+@app.get("/api/notion/connection", dependencies=[Depends(require_auth)])
+def notion_connection_status():
+    """Return setup status, never the user's Notion token."""
+    with conn() as db:
+        saved = notion_config.read_settings(db)
+    if saved:
+        return {"connected": True, "mode": "saved", "page_title": saved["page_title"]}
+    if NOTION_TOKEN and NOTION_PARENT_PAGE_ID:
+        return {"connected": True, "mode": "environment", "page_title": "已通过环境变量配置"}
+    return {"connected": False, "mode": "none", "page_title": ""}
+
+
+class NotionSettingsInput(BaseModel):
+    token: str = Field(min_length=8, max_length=3000)
+    page_url: str = Field(min_length=24, max_length=3000)
+
+
+@app.post("/api/notion/configure", dependencies=[Depends(require_auth)])
+def notion_configure(body: NotionSettingsInput):
+    """Validate Notion permissions before encrypting and saving settings."""
+    try:
+        page_id = notion_config.parse_page_id(body.page_url)
+        title = notion_config.validate_page(body.token.strip(), page_id)
+        with conn() as db:
+            notion_config.save_settings(db, APP_TOKEN, body.token.strip(), page_id, title)
+    except notion_config.NotionSetupError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    return {"connected": True, "page_title": title, "message": "Notion 已连接，之后可以直接从 X 分享收藏"}
+
+
+@app.post("/api/notion/disconnect", dependencies=[Depends(require_auth)])
+def notion_disconnect():
+    with conn() as db:
+        db.execute("DELETE FROM notion_settings WHERE id=1")
+    if NOTION_TOKEN and NOTION_PARENT_PAGE_ID:
+        return {"connected": True, "message": "已清除网页保存的连接；仍检测到 Render 环境变量中的 Notion 配置"}
+    return {"connected": False, "message": "已断开 Notion 连接"}
+
+
+@app.get("/setup/notion")
+def notion_setup():
+    """Public, credential-free instructions; configuration stays in Render."""
+    return FileResponse(WEB_DIR / "notion-setup.html", media_type="text/html",
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/health")
@@ -309,8 +378,9 @@ def save(body: SaveInput):
     if body.destination == "notion":
         if not info["has_video"]:
             raise HTTPException(400, detail="帖子中未检测到视频")
-        if not NOTION_TOKEN or not NOTION_PARENT_PAGE_ID:
-            raise HTTPException(409, detail="尚未配置 Notion Token 和父页面，建议先下载到本地")
+        notion_token, notion_parent, _ = notion_credentials()
+        if not notion_token or not notion_parent:
+            raise HTTPException(409, detail="Notion 尚未连接或未选择收藏页面")
     destination = "notion_video" if body.destination == "notion" else "archive"
     now = int(time.time())
     with conn() as db:

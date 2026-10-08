@@ -116,8 +116,15 @@ def test_shortcut_invalid_and_missing_notion(monkeypatch):
             with TestClient(appmod.app) as client:
                 missing = client.post("/api/shortcut/save", headers=HEADERS,
                                       json={"url": POST})
-                assert missing.json()["status"] == "failed"
+                assert missing.json()["status"] == "setup_required"
                 assert "Notion" in missing.json()["message"]
+                assert missing.json()["setup_url"] == "http://testserver/setup/notion"
+                assert TOKEN not in missing.json()["setup_url"]
+                guide = client.get("/setup/notion")
+                assert guide.status_code == 200
+                assert "收藏页面链接" in guide.text
+                assert "Notion 内部连接密钥" in guide.text
+                assert "验证并保存" in guide.text
                 assert client.post("/api/shortcut/save", json={"url": POST}).status_code == 401
 
 

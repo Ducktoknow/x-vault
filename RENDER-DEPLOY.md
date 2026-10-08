@@ -1,36 +1,49 @@
-# Render Docker 部署指引（免费版）
+# Render 部署 X Vault（个人使用）
 
-## 1. 准备 GitHub 仓库
-- 把 x-vault 目录作为**独立仓库根目录**提交：根目录必须能找到 `Dockerfile`、`render.yaml`、`requirements.txt`、`src/` 和 `web/`。
-- 不要提交 `.env`、Notion Token、Python 虚拟环境或本地归档文件（已配置 .gitignore 和 .dockerignore）。
-- 如果整个 codex 文件夹作为仓库：在 Render 新建 Web Service 时将 Root Directory 设为 `x-vault`，或在 Blueprint 中调整路径；最简单的是独立仓库。
+## 首次部署
 
-## 2. 创建 Render Web Service
-- Render Dashboard → New → Blueprint，连接 GitHub 仓库，选择根目录 `render.yaml`。或 New → Web Service → 选择仓库 → Language/Runtime 选择 Docker → Instance Type 选择 Free。
-- Blueprint 包含健康检查 `/health`、`PORT=10000`、`APP_TOKEN` 自动生成、`DATA_DIR=/data`、下载上限 `MAX_FILE_MB=100`。如使用手动 Web Service，需要自行配置这些环境变量。
-- **APP_TOKEN 必须妥善保管**。自动生成的凭据请在 Render Environment 查看并保存在密码管理器；若界面不能显示完整自动值，可自己生成至少 24 位随机 Token，然后在 Render 设置。
-- 可选：在 Environment 设置 `NOTION_TOKEN` 和 `NOTION_PARENT_PAGE_ID`，两者同时设置才会上传到 Notion。
-- 不要使用 `compose.yaml` 创建 Render 服务：Render 直接依据 Dockerfile 构建，不需要 Docker Compose。
-- 部署完成后访问 `https://<your-service>.onrender.com/health` 检查 JSON 中 `ok: true`，再打开首页输入 APP_TOKEN。
+1. Fork 本项目到自己的 GitHub。
+2. 打开 [Render Dashboard](https://dashboard.render.com/) → **New → Blueprint**，选择这个仓库，使用根目录 `render.yaml`；或使用 **New → Web Service**，选择 **Docker** 和 **Free**。
+3. 在 Render → **Environment** 检查 `APP_TOKEN`：至少 24 位随机字符。自动生成的密钥无法查看时，可自己生成替换。**不要把它放进 GitHub**。
+4. 等待部署完成，访问 `https://你的服务名.onrender.com/health`，确认 `ok: true`。打开首页输入 `APP_TOKEN`。
 
-## 3. 手机收藏
-- 在 X App 中复制/分享帖子链接，打开 Render 提供的 HTTPS 网页，粘贴后先解析。
-- 图文按当前逻辑归档；视频必须选择「保存到 Notion」或「下载到本机」。
-- iOS 快捷指令改用 `POST /api/shortcut/save`（JSON 正文 `url`=共享输入；请求头 `Authorization: Bearer APP_TOKEN`）。不跳转 Safari，服务最多等 25 秒。返回 `message` 供快捷指令「显示通知」使用；`status=complete` 才是真正 Notion 保存完成，`processing` 表示尚待后台处理，`partial/failed` 表示问题。
-- 视频在快捷收藏中只保存文字、可用的封面外链和 X 原帖播放链接，**不下载视频文件**；手动网页收藏仍可选择视频保存方式。Notion 必须配置 `NOTION_TOKEN` + `NOTION_PARENT_PAGE_ID`。
-- 视频下载为临时中转；首次唤醒冷启动、视频转码和大文件传输都可能超时。在免费计划上优先测试小视频，若下载不稳定建议升级或调整为直接从 X CDN 下载。
+## 连接 Notion（无需额外 Render 配置）
 
-## 4. 免费实例的重要限制
-- Free Web Service 闲置约 15 分钟后休眠，下次请求冷启动。
-- Free 无持久磁盘，重启/重新部署/休眠导致本地 SQLite、图片和归档历史可能消失；Notion 中**已经成功上传**的数据才可视为外部持久副本。不要依赖本地任务队列保证免费实例上的长期一致性。
-- 下载到设备的视频经过 Render 中转，会占用内存、CPU、临时存储和出站流量；视频文件仅在传输完成后清理，进程被杀时由下次启动清理。
-- MAX_FILE_MB 默认为 100 MiB（按单文件限制）；超长视频、HLS 合并、内存和 Render 请求时限须进一步实测。
-- 大于 Notion 账户允许的单文件上限的视频无法成功上传 Notion，会标为不完整；改为下载本机。
-- 本方案适合功能验证、轻量私人使用；如果要求永久保存记录，建议使用持久化数据库与对象存储或付费实例加持久磁盘。
+- 在 Notion 新建**内部连接**，授权它访问自己的「X 收藏」普通页面。
+- 打开 **X Vault 首页 → 连接 Notion**，粘贴 Notion 内部连接密钥及收藏页面链接，点击「验证并保存」。
+- **已经跑通的 iPhone 快捷指令不需要修改**。它仍然调用 `POST /api/shortcut/save`。
 
-## 5. 快速排查
-- 构建失败：确认仓库根路径与 Dockerfile 一致，查看 Render build logs。
-- 未正常监听：确认 Render PORT=10000，Dockerfile 已使用环境端口。
-- 401：检查 Bearer Token 是否与 Render Environment 的 APP_TOKEN 完全一致。
-- 无法抓取 X：检查 logs 中 FxTwitter / yt-dlp 错误；第三方公共 API 有地区、频率或稳定性限制。
-- 视频失败：先试较小公开 MP4；如果 HLS 视频超时，Free 实例可能不足。
+### Render 免费版的备用方案
+
+如果希望网页连接设置在 Render 实例数据丢失后仍能使用，可在 Environment 保留以下两个变量：
+
+| 环境变量 | 填写内容 |
+| --- | --- |
+| `NOTION_TOKEN` | Notion 内部连接密钥 |
+| `NOTION_PARENT_PAGE_ID` | 收藏页的 32 位 Page ID |
+
+网页保存的设置优先；网页配置不存在时，自动使用以上环境变量。修改这两个环境变量会触发重新部署，但不影响已保存到 Notion 的页面。
+
+## 部署更新
+
+GitHub `main` 更新后，如果 Render 启用了自动部署，会自动构建；否则在 Render → **Manual Deploy → Deploy latest commit**。
+
+请注意 **Render Free 的本地磁盘不持久**：实例休眠、重启、重新部署或被替换时，SQLite、已下载文件及网页保存的连接都可能丢失。要持久保存请使用有持久化存储的服务；Notion 中已经写入的归档不受影响。
+
+## 排查
+
+- **401**：检查请求头 `Authorization: Bearer APP_TOKEN` 是否正确，密钥与 Render Environment 中一致。
+- **缺少 Notion 配置**：回到首页「连接 Notion」，确认网页状态为「已连接」，并在 Notion 原页面中添加过内部连接。
+- **Notion 写入失败**：内部连接至少需要读取、插入、更新内容的权限。验证按钮只确认连接有权读取页面；真正的写入错误会在收藏结果中显示。
+- **视频/帖子解析失败**：先用公开帖子测试，检查 Render Logs；FxTwitter、X CDN 和第三方接口可能限流或暂时不可用。
+- **任务长时间处理中**：免费实例冷启动和网络延迟可能超过快捷指令等待时间；「正在处理」不是「收藏成功」。
+
+### 在自己的服务器用 Docker
+
+```bash
+cp config.example .env
+# 设置 .env 的 APP_TOKEN（至少 24 位）
+docker compose up -d --build
+```
+
+打开 `http://localhost:8000`。数据默认保存在 Docker 命名卷 `xvault_data`；如要让外网 iPhone 分享到这台服务器，请为它配置 HTTPS。

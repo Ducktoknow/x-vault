@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>连接 Notion · X Vault</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:#1b2540;background:#f4f6fb}
+*{box-sizing:border-box}body{margin:0}main{max-width:600px;margin:auto;padding:28px 16px 70px}
+h1{font-size:29px;margin:5px 0 8px}h2{font-size:19px;margin:0 0 12px}p{line-height:1.6;color:#526079}
+.card{background:white;border:1px solid #e0e6f0;border-radius:16px;padding:20px;margin:18px 0}
+input{display:block;width:100%;border:1px solid #c9d1e2;border-radius:10px;padding:13px;font:inherit;margin:8px 0 17px}
+label{font-size:14px;font-weight:650}button,.cta{display:inline-block;background:#5165ee;color:white;border:0;border-radius:10px;padding:13px 16px;font:inherit;font-weight:650;text-decoration:none;cursor:pointer}
+button:disabled{opacity:.5;cursor:wait}.secondary{background:#ecf0fb;color:#3c4e94}
+#status{padding:12px;background:#f1f5fc;border-radius:10px;line-height:1.5;margin:12px 0;color:#43526b}
+small,.muted{color:#6c7890;font-size:13px;line-height:1.6}a{color:#4053c6}
+</style>
+</head>
+<body>
+<main>
+<p class="muted">X VAULT · 个人 Notion 设置</p>
+<h1>连接你的 Notion</h1>
+<p>只需要设置一次，之后在 X 里点击「分享 → 收藏到 X Vault」，不必更改已经能用的快捷指令。</p>
+<section class="card">
+<h2>第一步：在 Notion 准备好页面</h2>
+<p>创建一个普通页面，例如「X 收藏」，再创建自己的 Notion 内部连接。在这个页面的「••• → 连接 / 添加连接」中允许该连接访问页面，并复制连接密钥。</p>
+<a class="cta secondary" href="https://www.notion.so/profile/integrations" target="_blank" rel="noopener noreferrer">打开 Notion 连接管理 ↗</a>
+<p class="muted">需要的权限：读取内容、插入内容、更新内容。若已经有自己的内部连接，可以直接复用。</p>
+</section>
+<section class="card">
+<h2>第二步：填一次即可</h2>
+<form id="setupForm">
+<label for="notionToken">Notion 内部连接密钥</label>
+<input id="notionToken" type="password" placeholder="从 Notion 集成设置里复制的密钥" required autocomplete="off" spellcheck="false">
+<label for="pageUrl">收藏页面链接</label>
+<input id="pageUrl" type="text" placeholder="https://www.notion.so/你的收藏页面-xxxxxxxx..." required spellcheck="false" autocapitalize="off">
+<button id="saveButton" type="submit">验证并保存</button>
+</form>
+<div id="status" role="status">正在读取连接状态…</div>
+<div id="connectedActions" hidden><button class="secondary" type="button" id="disconnect">断开连接</button></div>
+<p class="muted">保存前会检查连接密钥能否访问这个 Notion 页面。密钥仅发送到你自己的 X Vault 服务端，不会显示在其他页面，也不会保存到浏览器本地。</p>
+</section>
+<p class="muted">你仍需保存好 X Vault 的 APP_TOKEN。为了保护个人配置，本页面第一次使用时可能要求在下面输入 APP_TOKEN。它不是 Notion 的密钥。</p>
+<section class="card" id="authCard" hidden>
+<label for="appToken">X Vault 的 APP_TOKEN</label>
+<input id="appToken" type="password" autocomplete="off" placeholder="你部署时设置的 APP_TOKEN">
+<button id="saveAppToken" type="button">确认身份</button>
+</section>
+<p class="muted"><a href="/">← 返回 X Vault</a></p>
+</main>
+<script>
+(()=>{
+const $=id=>document.getElementById(id);
+const tokenKey="xvault_token";
+const setStatus=message=>{$("status").textContent=message};
+async function api(path,options={}){
+ const response=await fetch(path,{...options,headers:{"Authorization":"Bearer "+(localStorage.getItem(tokenKey)||""),"Content-Type":"application/json",...(options.headers||{})}});
+ const body=await response.json().catch(()=>({detail:"服务器返回异常"}));
+ if(!response.ok)throw new Error(typeof body.detail==="string"?body.detail:"请求失败");
+ return body;
+}
+async function refresh(){
+ if(!localStorage.getItem(tokenKey)){$("authCard").hidden=false;setStatus("请先验证 X Vault APP_TOKEN");return;}
+ try{
+  const data=await api("/api/notion/connection");
+  $("authCard").hidden=true;
+  $("connectedActions").hidden=!data.connected||data.mode==="environment";
+  setStatus(data.connected?"已连接 Notion： "+data.page_title:"尚未连接 Notion，请填写上面的信息");
+ }catch(err){$("authCard").hidden=false;setStatus("无法读取连接状态，请检查 APP_TOKEN");}
+}
+$("saveAppToken").onclick=async()=>{
+ const key=$("appToken").value.trim();
+ if(!key)return;
+ localStorage.setItem(tokenKey,key);
+ $("appToken").value="";
+ await refresh();
+};
+$("setupForm").onsubmit=async e=>{
+ e.preventDefault();
+ const token=$("notionToken").value.trim(),page_url=$("pageUrl").value.trim();
+ if(!token||!page_url)return;
+ const button=$("saveButton");button.disabled=true;setStatus("正在验证 Notion 页面权限…");
+ try{
+  const result=await api("/api/notion/configure",{method:"POST",body:JSON.stringify({token,page_url})});
+  $("notionToken").value="";$("pageUrl").value="";
+  setStatus(result.message+" · "+result.page_title);
+  $("connectedActions").hidden=false;
+ }catch(err){setStatus("保存失败："+err.message);if(!localStorage.getItem(tokenKey))$("authCard").hidden=false}
+ finally{button.disabled=false}
+};
+$("disconnect").onclick=async()=>{
+ if(!confirm("确定要断开 Notion 连接吗？"))return;
+ try{const result=await api("/api/notion/disconnect",{method:"POST"});await refresh();setStatus(result.message)}
+ catch(err){setStatus("操作失败："+err.message)}
+};
+refresh();
+})();
+</script>
+</body>
+</html>
