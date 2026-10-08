@@ -83,10 +83,16 @@ def save_settings(db, secret, token, page_id, page_title):
 
 def validate_page(token, page_id, *, session=None):
     """Validate token and page access via Notion GET; do not write a test page."""
+    if not PAGE_ID_PATTERN.fullmatch(page_id):
+        raise NotionSetupError("无法识别页面 ID，请从 Notion 普通页面复制完整链接")
+    compact_id = page_id.replace("-", "").lower()
+    # Notion's retrieve-page endpoint expects a UUID. Use the canonical
+    # hyphenated form, not an arbitrary substring from a shared page URL.
+    normalized_id = f"{compact_id[:8]}-{compact_id[8:12]}-{compact_id[12:16]}-{compact_id[16:20]}-{compact_id[20:]}"
     client = session or requests
     try:
         response = client.get(
-            "https://api.notion.com/v1/pages/" + page_id,
+            "https://api.notion.com/v1/pages/" + normalized_id,
             headers={"Authorization": "Bearer " + token, "Notion-Version": NOTION_VERSION},
             timeout=18)
     except requests.RequestException as exc:
@@ -98,8 +104,32 @@ def validate_page(token, page_id, *, session=None):
         raise NotionSetupError("该连接无法访问收藏页面：请在 Notion 页面右上角「··· → 添加连接」授权")
     if response.status_code == 429:
         raise NotionSetupError("Notion 请求过于频繁，请稍后再试")
+    if response.status_code == 400:
+        # Previously every 400 was reported as an opaque 'HTTP 400'. Notion's
+        # JSON body contains code/message needed to identify the real cause.
+        try:
+            data = response.json()
+        except (ValueError, TypeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        code = str(data.get("code") or "unknown")
+        code = re.sub(r"[^a-z0-9_]", "", code.lower())[:60] or "unknown"
+        message = str(data.get("message") or "")
+        message = message.replace(token, "[已隐藏]")
+        message = re.sub(r"(?i)\\b(?:ntn_|secret_)[a-z0-9_-]+", "[已隐藏]", message)
+        message = " ".join(message.split())[:180]
+        hints = {
+            "validation_error": "请确认链接来自普通 Notion 页面，不是数据库或工作区首页",
+            "invalid_request_url": "请重新从 Notion 普通页面复制链接，确认页面 ID 正确",
+            "missing_version": "Notion API 版本设置异常，请检查服务版本",
+            "invalid_request": "请检查连接类型以及所选页面是否受 Notion API 支持",
+        }
+        hint = hints.get(code, "请检查 Notion 连接权限、页面类型和页面链接")
+        details = "；Notion 说明：" + message if message else ""
+        raise NotionSetupError(f"Notion 返回 HTTP 400（{code}）：{hint}{details}")
     if not response.ok:
-        raise NotionSetupError("Notion 检查失败，请稍后重试（HTTP " + str(response.status_code) + "）")
+        raise NotionSetupError("Notion 连接检查失败（HTTP " + str(response.status_code) + "），请稍后重试")
 
     try:
         result = response.json()

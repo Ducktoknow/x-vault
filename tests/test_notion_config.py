@@ -111,6 +111,68 @@ def test_encrypted_token_wrong_key():
     assert notion_config.decrypt_token(TOKEN,encrypted)=="notion-value"
     with pytest.raises(notion_config.NotionSetupError):
         notion_config.decrypt_token("different-deployment-token-123456789",encrypted)
+def test_notion_400_returns_specific_safe_diagnostics():
+    """Surface upstream Notion code/message rather than opaque HTTP 400."""
+    class Response:
+        status_code = 400
+        ok = False
+        def json(self):
+            return {"code": "validation_error",
+                    "message": "Expected a page id; secret_SUPERSECRET42 is not valid."}
+    class Session:
+        def get(self, url, **kwargs):
+            self.url = url
+            assert kwargs["headers"]["Notion-Version"] == "2026-03-11"
+            assert kwargs["headers"]["Authorization"] == "Bearer secret_SUPERSECRET42"
+            return Response()
+
+    session = Session()
+    with pytest.raises(notion_config.NotionSetupError) as captured:
+        notion_config.validate_page("secret_SUPERSECRET42", PAGE_ID, session=session)
+    text = str(captured.value)
+    assert "HTTP 400" in text and "validation_error" in text
+    assert "请确认链接来自普通 Notion 页面" in text
+    assert "secret_SUPERSECRET42" not in text
+    assert "/pages/12345678-90ab-cdef-1234-567890abcdef" in session.url
+
+
+def test_unknown_notion_400_has_actionable_message():
+    class Response:
+        status_code = 400
+        ok = False
+        def json(self):
+            return {"code": "invalid_request_url", "message": "Invalid URL."}
+    class Session:
+        def get(self, *args, **kwargs): return Response()
+    with pytest.raises(notion_config.NotionSetupError) as captured:
+        notion_config.validate_page("test-notion-internal-token", PAGE_ID, session=Session())
+    assert "invalid_request_url" in str(captured.value)
+    assert "复制链接" in str(captured.value)
+
+
+def test_bad_notion_id_rejected_before_request():
+    class Session:
+        def get(self, *args, **kwargs):
+            raise AssertionError("Do not contact Notion for an invalid page ID")
+    with pytest.raises(notion_config.NotionSetupError, match="页面 ID"):
+        notion_config.validate_page("secret", "not-a-page", session=Session())
+
+
+def test_web_response_shows_notion_upstream_400_details(monkeypatch):
+    """Verify the exact error is returned to the owner, without credentials."""
+    with TemporaryDirectory() as tmp:
+        app = initialize(monkeypatch, tmp)
+        with patch.object(app, "queue_worker", side_effect=idle):
+            with TestClient(app.app) as c:
+                with patch.object(app.notion_config, "validate_page",
+                    side_effect=notion_config.NotionSetupError("Notion 返回 HTTP 400（validation_error）：链接不是普通页面")):
+                    bad = c.post("/api/notion/configure", headers=AUTH,
+                        json={"token": "notion-private-secret", "page_url": NOTION_URL})
+                assert bad.status_code == 400
+                assert "validation_error" in bad.json()["detail"]
+                assert "notion-private-secret" not in str(bad.json())
+                assert c.get("/api/notion/connection", headers=AUTH).json()["connected"] is False
+
 
 def test_web_config_is_used_by_existing_shortcut(monkeypatch):
     """Web setup and existing iOS endpoint use the exact same stored credentials."""
