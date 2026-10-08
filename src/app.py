@@ -196,6 +196,9 @@ class SaveInput(BaseModel):
 
 class ShortcutInput(BaseModel):
     url: str = Field(min_length=15, max_length=3000)
+    # New shortcut opts into direct iPhone video downloads. The original
+    # shortcut (which omits this field) keeps its established Notion behavior.
+    video_action: Literal["notion", "download"] = "notion"
 
 
 def shortcut_result(row):
@@ -217,24 +220,49 @@ def shortcut_result(row):
 
 @app.post("/api/shortcut/save", dependencies=[Depends(require_auth)])
 async def shortcut_save(body: ShortcutInput, request: Request):
-    """One-call iOS share sheet API. Never report success until Notion confirms."""
-    notion_token, notion_parent, _ = notion_credentials()
-    if not notion_token or not notion_parent:
-        # Configuration guidance is public, but never put credentials in links.
-        setup_url = str(request.url_for("notion_setup"))
-        if request.headers.get("x-forwarded-proto", "").lower() == "https" and setup_url.startswith("http://"):
-            setup_url = "https://" + setup_url[len("http://"):]
-        return {"status": "setup_required", "message": "尚未连接 Notion，可打开引导页面完成一次性配置",
-                "setup_url": setup_url}
+    """iOS share sheet: video download is opt-in; legacy Notion stays intact."""
     match = re.search(r"https?://(?:www\.|mobile\.)?(?:x\.com|twitter\.com)/[^\s/]+/status/\d+[^\s]*", body.url, re.I)
     try:
         tweet_id, canonical = parse_post_url(match.group(0) if match else body.url)
     except ValueError as exc:
         return {"status": "failed", "message": "⚠️ 未识别到有效 X 帖子链接：" + str(exc)}
+    # Older shortcuts keep their Notion behavior and should still get the
+    # setup message without making an unnecessary request to X.
+    if body.video_action == "notion":
+        notion_token, notion_parent, _ = notion_credentials()
+        if not notion_token or not notion_parent:
+            setup_url = str(request.url_for("notion_setup"))
+            if request.headers.get("x-forwarded-proto", "").lower() == "https" and setup_url.startswith("http://"):
+                setup_url = "https://" + setup_url[len("http://"):]
+            return {"status": "setup_required", "message": "尚未连接 Notion，请先在 X Vault 网页连接 Notion",
+                    "setup_url": setup_url}
     try:
         info = await asyncio.to_thread(inspect_post, tweet_id)
     except Exception as exc:
         return {"status": "failed", "message": "⚠️ 帖子解析失败：" + str(exc)[:180]}
+    if info["has_video"] and body.video_action == "download":
+        # Temporary single-use link lets Shortcuts fetch the actual file and
+        # save it on the iPhone; a server response cannot save a phone file.
+        try:
+            ticket = issue_ticket(tweet_id)
+        except RuntimeError as exc:
+            return {"status": "failed", "message": "⚠️ 暂时无法下载视频：" + str(exc)}
+        download_url = str(request.url_for("download_selected_video", ticket=ticket))
+        if request.headers.get("x-forwarded-proto", "").lower() == "https" and download_url.startswith("http://"):
+            download_url = "https://" + download_url[len("http://"):]
+        return {"tweet_id": tweet_id, "status": "download_ready",
+                "download_url": download_url,
+                "message": "🎬 已识别视频，正在交给快捷指令下载；文件保存前不算成功"}
+
+    # Text / image posts, plus older shortcuts that still select Notion,
+    # continue to use the existing queue and strict completion status.
+    notion_token, notion_parent, _ = notion_credentials()
+    if not notion_token or not notion_parent:
+        setup_url = str(request.url_for("notion_setup"))
+        if request.headers.get("x-forwarded-proto", "").lower() == "https" and setup_url.startswith("http://"):
+            setup_url = "https://" + setup_url[len("http://"):]
+        return {"status": "setup_required", "message": "尚未连接 Notion，请先在 X Vault 网页连接 Notion",
+                "setup_url": setup_url}
     delivery = "notion_metadata" if info["has_video"] else "archive"
     now = int(time.time())
     with conn() as db:
@@ -429,7 +457,11 @@ def download_selected_video(ticket: str):
                 for file in [base / "archive.json", base / "archive.md"] + downloaded:
                     zf.write(file, file.relative_to(base))
             name = target.name
-        return FileResponse(target, filename=name, media_type="application/octet-stream",
+        # Accurate MIME types help iOS Shortcuts retain MP4/WebM/ZIP file
+        # identities when saving downloaded content to the Files app.
+        content_type = {".mp4": "video/mp4", ".webm": "video/webm",
+                        ".zip": "application/zip"}.get(target.suffix.lower(), "application/octet-stream")
+        return FileResponse(target, filename=name, media_type=content_type,
                             headers={"Cache-Control": "private, no-store",
                                      "X-Content-Type-Options": "nosniff"},
                             background=BackgroundTask(shutil.rmtree, work, ignore_errors=True))
