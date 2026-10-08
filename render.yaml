@@ -1,0 +1,24 @@
+# Deploy this file using Render > New > Blueprint.
+# Use x-vault as the repository root; if keeping a monorepo, configure paths accordingly.
+services:
+  - type: web
+    name: x-vault
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: APP_TOKEN
+        generateValue: true
+      - key: DATA_DIR
+        value: /data
+      - key: MAX_FILE_MB
+        value: "100"
+      - key: YTDLP_X_FALLBACK
+        value: "true"
+# Configure NOTION_TOKEN and NOTION_PARENT_PAGE_ID separately in the Render dashboard.
+# IMPORTANT: Render Free local files are ephemeral. Notion is the durable destination;
+# temporary video and in-app history/SQLite disappear on sleep/redeploy.

@@ -1,0 +1,10 @@
+# Duplicate as .env for local Docker Compose only.
+# Render provides most environment settings through Render Dashboard.
+APP_TOKEN=replace-with-long-random-secret
+DATA_DIR=/data
+MAX_FILE_MB=100
+YTDLP_X_FALLBACK=true
+NOTION_TOKEN=
+NOTION_PARENT_PAGE_ID=
+DOMAIN=
+PUBLIC_BASE_URL=

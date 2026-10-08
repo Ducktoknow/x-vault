@@ -1,0 +1,20 @@
+# Optional: run with: docker compose -f compose.yaml -f compose.public.yaml up -d --build
+# Domain must point straight to the server (DNS-only, not proxied by Cloudflare).
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - x-vault
+volumes:
+  caddy_data:
+  caddy_config:

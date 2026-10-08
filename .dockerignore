@@ -1,0 +1,14 @@
+# Do not send local secrets, virtualenv, test artifacts or caches to Render's Docker builder.
+.env
+.env.*
+.venv/
+.git/
+.gitignore
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.DS_Store
+tests/
+*.sqlite3
+archives/
+xvault-backup*.tar.gz
