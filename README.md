@@ -80,14 +80,13 @@ docker compose exec -T x-vault tar -czf - -C /data . > xvault-backup.tar.gz
 docker compose -f compose.yaml -f compose.public.yaml up -d --build
 ```
 
-**iPhone/iPad：**「快捷指令」App 新建一个快捷指令：
+**iPhone/iPad：分享后自动识别，不必复制链接/粘贴/手动点解析。**
 
-- 详情 → 启用 **在共享表单中显示**；接受输入类型选「URL」与「文本」。
-- 动作「从快捷指令输入中获取 URL」；若只有一段包含 URL 的文本，先用「匹配文本」正则 `https?://(?:www\.)?(?:x\.com|twitter\.com)/[^\s]+/status/\d+[^\s]*` 找到完整链接，再取第一项。
-- 动作「获取 URL 内容」，URL 填 `https://archive.example.com/api/save`，方法选 `POST`，请求正文选 `JSON`，字段 `url` = 前面取到的 X 链接。
-- 请求头加入 `Authorization: Bearer 你的APP_TOKEN`；`Content-Type: application/json`。
-- 末尾动作「显示通知」，例如“已发送到 X Vault”（此时仅代表入队，不代表完成视频下载）。
-- 在 X App 选择帖子 → 分享 → iOS 共享表单 → 该快捷指令。此操作不发布公开回复。
+1. 「快捷指令」新增「收藏到 X Vault」，详情里打开「在共享表单中显示」，接收「URL」和「文本」。
+2. 通过「URL」动作填写 `https://你的Render域名.onrender.com/?url=`，把**「快捷指令输入」蓝色变量**紧接在等号后（不是把“快捷指令输入”写成普通文字）。再加一个「打开 URL」动作，使用上一步的 URL。Safari 打开 X Vault 后自动解析。
+3. 第一次在 Safari 的 X Vault 页面保存 `APP_TOKEN`；以后从 X 帖子点击「分享」→「通过其他应用分享」→「收藏到 X Vault」。无需复制链接，普通图文直接入队，视频只需选择 Notion 或下载到本机。
+
+如果 X 的分享菜单没有显示该快捷指令，先确认快捷指令详情中已开启共享表单、接受 URL 和文本；部分 X 版本需要先进入 iOS 系统共享表单。`?url=` 或 `?text=` 携带可识别 X 帖子链接时，网页会自动触发解析；普通直接打开首页仍需输入链接。快捷指令中不要放 Token 或把 Token 加到 URL 查询参数。
 
 **Android：** Chrome 访问 HTTPS 的 X Vault → 菜单「添加到主屏幕」或「安装应用」；在 X App 分享帖子时，可以在 Android 分享目标中选择 X Vault，应用收到分享 URL 后需要点击一次「立即归档」。分享目标功能需 Android/浏览器实际支持。
 
