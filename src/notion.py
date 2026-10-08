@@ -5,6 +5,8 @@ from pathlib import Path
 import time
 import requests
 
+from .archive import valid_cdn_url
+
 NOTION_VERSION = "2026-03-11"
 PART_SIZE = 10 * 1024 * 1024  # <20 MiB per part
 
@@ -89,7 +91,7 @@ class NotionPublisher:
         for i in range(0, len(blocks), 50):
             self.call("PATCH", f"/blocks/{page_id}/children", json={"children": blocks[i:i+50]})
 
-    def publish(self, archive, archive_dir, public_base_url="", share_key="", *, on_created=None, ephemeral=False):
+    def publish(self, archive, archive_dir, public_base_url="", share_key="", *, on_created=None, ephemeral=False, metadata_only=False):
         first = archive["posts"][0]
         title = (first["text"].replace("\n", " ")[:75] or f"X帖子 {archive['tweet_id']}").strip()
         page_id, page_url = self.create_page(f"X｜{title}")
@@ -97,8 +99,9 @@ class NotionPublisher:
             on_created(page_url)
         warnings = []
         blocks = [paragraph("原帖：" + archive["source"], archive["source"]),
-                  paragraph("Thread 的完整性无法保证；视频临时处理中转完成后会从服务器删除。" if ephemeral else
-                            "Thread 的完整性无法保证；原始内容和媒体也保存在自托管服务中。")]
+                  paragraph("本收藏只包含正文、封面与原帖链接；不会下载或上传视频文件。Thread 完整性不保证。" if metadata_only else
+                            ("Thread 的完整性无法保证；视频临时处理中转完成后会从服务器删除。" if ephemeral else
+                             "Thread 的完整性无法保证；原始内容和媒体也保存在自托管服务中。"))]
         for i, post in enumerate(archive["posts"], 1):
             blocks.append({"object": "block", "type": "heading_2", "heading_2": {
                 "rich_text": [rt(f"{i}. {'引用帖 ' if post.get('is_quote') else ''}@{post.get('author_username') or 'unknown'} · {post.get('created_at') or ''}"[:180])]}})
@@ -107,6 +110,19 @@ class NotionPublisher:
                     blocks.append(paragraph(part))
             blocks.append(paragraph("在 X 打开", post["url"]))
             for medium in post["media"]:
+                if metadata_only:
+                    if medium["kind"] == "video":
+                        blocks.append(paragraph("▶️ 在 X 播放原视频", post["url"]))
+                        thumbnail = medium.get("thumbnail_url") or ""
+                        if valid_cdn_url(thumbnail):
+                            blocks.append({"object": "block", "type": "image", "image": {
+                                "type": "external", "external": {"url": thumbnail}}})
+                        else:
+                            blocks.append(paragraph("视频封面暂不可用，可通过原帖链接观看。"))
+                    elif medium["kind"] == "image" and valid_cdn_url(medium.get("source") or ""):
+                        blocks.append({"object": "block", "type": "image", "image": {
+                            "type": "external", "external": {"url": medium["source"]}}})
+                    continue
                 file_name = medium.get("file")
                 if not file_name:
                     blocks.append(paragraph("⚠️ 媒体文件未能下载。"))

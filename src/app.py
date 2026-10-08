@@ -3,6 +3,7 @@ import asyncio
 import hmac
 import json
 import os
+import re
 import shutil
 import tempfile
 import zipfile
@@ -30,6 +31,7 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
 NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID", "")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 MAX_FILE_MB = max(1, min(8192, int(os.getenv("MAX_FILE_MB", "1024"))))
+SHORTCUT_WAIT_SECONDS = 25
 DB = DATA_DIR / "vault.sqlite3"
 TEMP_DIR = Path(tempfile.gettempdir()) / "xvault-transfers"
 TEMP_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -85,6 +87,7 @@ def process_one(tweet_id):
         row = db.execute("SELECT * FROM archives WHERE tweet_id=?", (tweet_id,)).fetchone()
     messages = []
     notion_url = row["notion_url"]
+    metadata_only = row["delivery"] == "notion_metadata"
     ephemeral = row["delivery"] == "notion_video"
     try:
         if ephemeral and notion_url:
@@ -94,7 +97,8 @@ def process_one(tweet_id):
             staging = tempfile.TemporaryDirectory(prefix="notion-", dir=TEMP_DIR) if ephemeral else nullcontext(str(DATA_DIR))
             with staging as storage:
                 archive = archive_post(tweet_id, Path(storage), max_file_mb=MAX_FILE_MB,
-                                       use_ytdlp_fallback=os.getenv("YTDLP_X_FALLBACK", "true").lower() == "true")
+                                       use_ytdlp_fallback=os.getenv("YTDLP_X_FALLBACK", "true").lower() == "true",
+                                       metadata_only=metadata_only)
                 messages += archive.get("errors") or []
                 if NOTION_TOKEN and NOTION_PARENT_PAGE_ID:
                     try:
@@ -109,7 +113,8 @@ def process_one(tweet_id):
                             notion_url, warnings = NotionPublisher(NOTION_TOKEN, NOTION_PARENT_PAGE_ID).publish(
                                 archive, Path(storage) / "archives" / tweet_id,
                                 "" if ephemeral else PUBLIC_BASE_URL, row["share_key"],
-                                on_created=remember_created_page, ephemeral=ephemeral)
+                                on_created=remember_created_page, ephemeral=ephemeral,
+                                metadata_only=metadata_only)
                             messages += warnings
                     except Exception as exc:
                         messages.append("Notion 同步异常：" + str(exc))
@@ -170,6 +175,66 @@ app = FastAPI(title="X Vault", docs_url=None, redoc_url=None, lifespan=lifespan)
 class SaveInput(BaseModel):
     url: str = Field(min_length=15, max_length=2048)
     destination: Literal["local", "notion"] | None = None
+
+
+class ShortcutInput(BaseModel):
+    url: str = Field(min_length=15, max_length=3000)
+
+
+def shortcut_result(row):
+    status = row["status"]
+    notion_url = row["notion_url"]
+    if status == "complete" and notion_url:
+        message = "✅ 收藏完成，已保存到 Notion"
+        result_status = "complete"
+    elif status in ("failed", "partial") or (status == "complete" and not notion_url):
+        reason = row["error"] or "；".join(json.loads(row["warnings"] or "[]")) or "未确认 Notion 保存成功"
+        message = "⚠️ 收藏未完全成功：" + reason[:250]
+        result_status = "partial" if status == "partial" else "failed"
+    else:
+        message = "⏳ 正在保存，尚未确认成功；可稍后到 X Vault 查看结果"
+        result_status = "processing"
+    return {"tweet_id": row["tweet_id"], "status": result_status,
+            "message": message, "notion_url": notion_url}
+
+
+@app.post("/api/shortcut/save", dependencies=[Depends(require_auth)])
+async def shortcut_save(body: ShortcutInput):
+    """One-call iOS share sheet API. Never report success until Notion confirms."""
+    if not NOTION_TOKEN or not NOTION_PARENT_PAGE_ID:
+        return {"status": "failed", "message": "⚠️ 尚未配置 Notion，请先在 Render 配置 Notion Token 和页面 ID"}
+    match = re.search(r"https?://(?:www\.|mobile\.)?(?:x\.com|twitter\.com)/[^\s/]+/status/\d+[^\s]*", body.url, re.I)
+    try:
+        tweet_id, canonical = parse_post_url(match.group(0) if match else body.url)
+    except ValueError as exc:
+        return {"status": "failed", "message": "⚠️ 未识别到有效 X 帖子链接：" + str(exc)}
+    try:
+        info = await asyncio.to_thread(inspect_post, tweet_id)
+    except Exception as exc:
+        return {"status": "failed", "message": "⚠️ 帖子解析失败：" + str(exc)[:180]}
+    delivery = "notion_metadata" if info["has_video"] else "archive"
+    now = int(time.time())
+    with conn() as db:
+        row = db.execute("SELECT * FROM archives WHERE tweet_id=?", (tweet_id,)).fetchone()
+        if row is None:
+            db.execute("INSERT INTO archives(tweet_id,original_url,status,share_key,created_at,updated_at,delivery)"
+                       " VALUES (?,?,?,?,?,?,?)", (tweet_id, canonical, "queued", secrets.token_urlsafe(32), now, now, delivery))
+        elif row["delivery"] != delivery:
+            if row["notion_url"] and row["status"] == "complete":
+                return shortcut_result(row)
+            return {"tweet_id": tweet_id, "status": "failed",
+                    "message": "⚠️ 这条帖子已有其他保存方式的记录，请在 X Vault 网页中检查"}
+    # A Shortcut may time out on a cold Render instance. Bound waiting; return
+    # processing, never a false positive, if the worker is still running.
+    deadline = time.monotonic() + SHORTCUT_WAIT_SECONDS
+    while True:
+        with conn() as db:
+            current = db.execute("SELECT * FROM archives WHERE tweet_id=?", (tweet_id,)).fetchone()
+        if current["status"] in ("complete", "failed", "partial"):
+            return shortcut_result(current)
+        if time.monotonic() >= deadline:
+            return shortcut_result(current)
+        await asyncio.sleep(1)
 
 
 @app.get("/health")
@@ -305,7 +370,7 @@ def retry(tweet_id: str):
             raise HTTPException(404)
         if row["status"] == "running":
             return {"status": "running"}
-        if row["delivery"] == "notion_video" and row["notion_url"]:
+        if row["delivery"] in ("notion_video", "notion_metadata") and row["notion_url"]:
             raise HTTPException(409, detail="Notion 页面已创建，不能自动重试覆盖；请检查页面或改用本机下载")
         db.execute("UPDATE archives SET status='queued',error=NULL,updated_at=? WHERE tweet_id=?", (int(time.time()), tweet_id))
     return {"status": "queued"}

@@ -73,7 +73,7 @@ def test_notion_video_uses_ephemeral_files_and_retains_text_only(monkeypatch):
             def __init__(self, *args, **kwargs):
                 pass
             def publish(self, archive, archive_dir, public_base_url, share_key, *,
-                        on_created=None, ephemeral=False):
+                        on_created=None, ephemeral=False, metadata_only=False):
                 assert ephemeral and not public_base_url
                 assert (archive_dir / "media/001-01-video.mp4").exists()
                 on_created("https://notion.so/test-page")

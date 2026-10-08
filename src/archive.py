@@ -196,7 +196,7 @@ def media_items(post):
     return (media.get("photos") or []) + (media.get("videos") or [])
 
 
-def archive_post(tweet_id: str, storage: Path, max_file_mb=1024, use_ytdlp_fallback=False, *, fetcher=fetch_thread, only_videos=False):
+def archive_post(tweet_id: str, storage: Path, max_file_mb=1024, use_ytdlp_fallback=False, *, fetcher=fetch_thread, only_videos=False, metadata_only=False):
     archive_dir = storage / "archives" / tweet_id
     media_dir = archive_dir / "media"
     media_dir.mkdir(parents=True, exist_ok=True)
@@ -237,7 +237,10 @@ def archive_post(tweet_id: str, storage: Path, max_file_mb=1024, use_ytdlp_fallb
                 if ext not in {"png", "jpg", "jpeg", "gif", "webp"}:
                     ext = "jpg"
                 out = media_dir / f"{i:03d}-{j:02d}-image.{ext}"
-                record = {"kind": "image", "source": source, "file": None, "alt": medium.get("altText") or ""}
+                record = {"kind": "image", "source": source if valid_cdn_url(source) else "", "file": None, "alt": medium.get("altText") or ""}
+                if metadata_only:
+                    post_data["media"].append(record)
+                    continue
                 try:
                     safe_file_download(source, out, max_bytes)
                     try:
@@ -252,9 +255,15 @@ def archive_post(tweet_id: str, storage: Path, max_file_mb=1024, use_ytdlp_fallb
             elif mtype in ("video", "gif"):
                 choices, hls = best_video_urls(medium)
                 base = media_dir / f"{i:03d}-{j:02d}-video"
-                record = {"kind": "video", "file": None, "source": medium.get("url"),
+                thumbnail = medium.get("thumbnail_url") or medium.get("poster") or ""
+                record = {"kind": "video", "file": None,
+                          "source": medium.get("url") if valid_cdn_url(medium.get("url") or "") else "",
+                          "thumbnail_url": thumbnail if valid_cdn_url(thumbnail) else "",
                           "width": medium.get("width"), "height": medium.get("height"),
                           "duration": medium.get("duration"), "download_method": None}
+                if metadata_only:
+                    post_data["media"].append(record)
+                    continue
                 failures = []
                 for choice in choices:
                     ext = ".webm" if choice.get("container") == "webm" else ".mp4"
@@ -308,6 +317,13 @@ def archive_post(tweet_id: str, storage: Path, max_file_mb=1024, use_ytdlp_fallb
         for m in post["media"]:
             if m["file"]:
                 lines.append(f"![图片]({m['file']})" if m["kind"] == "image" else f"[本地视频]({m['file']})")
+            elif metadata_only:
+                if m["kind"] == "video":
+                    lines.append(f"[在 X 查看视频]({post['url']})")
+                    if m.get("thumbnail_url"):
+                        lines.append(f"![视频封面]({m['thumbnail_url']})")
+                elif m.get("source"):
+                    lines.append(f"![图片]({m['source']})")
             else:
                 lines.append(f"⚠️ {m['kind']} 未能下载")
         lines.append("")

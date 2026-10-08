@@ -16,7 +16,8 @@
 ## 3. 手机收藏
 - 在 X App 中复制/分享帖子链接，打开 Render 提供的 HTTPS 网页，粘贴后先解析。
 - 图文按当前逻辑归档；视频必须选择「保存到 Notion」或「下载到本机」。
-- iOS 快捷指令若沿用旧版只请求 `POST /api/save`，遇到视频会收到 `needs_choice`，并**不会自动下载**。快捷指令需读取结果并打开 X Vault 页面进行选择。
+- iOS 快捷指令改用 `POST /api/shortcut/save`（JSON 正文 `url`=共享输入；请求头 `Authorization: Bearer APP_TOKEN`）。不跳转 Safari，服务最多等 25 秒。返回 `message` 供快捷指令「显示通知」使用；`status=complete` 才是真正 Notion 保存完成，`processing` 表示尚待后台处理，`partial/failed` 表示问题。
+- 视频在快捷收藏中只保存文字、可用的封面外链和 X 原帖播放链接，**不下载视频文件**；手动网页收藏仍可选择视频保存方式。Notion 必须配置 `NOTION_TOKEN` + `NOTION_PARENT_PAGE_ID`。
 - 视频下载为临时中转；首次唤醒冷启动、视频转码和大文件传输都可能超时。在免费计划上优先测试小视频，若下载不稳定建议升级或调整为直接从 X CDN 下载。
 
 ## 4. 免费实例的重要限制
