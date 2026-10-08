@@ -13,7 +13,7 @@
 
 1. Fork 本项目，在 Render 新建 **Blueprint**，连接仓库的 `render.yaml`；也可以手动创建 Docker Web Service。
 2. Render → Environment 设置 `APP_TOKEN`（至少 24 位随机字符）。Blueprint 若已生成，可沿用它。其他 Notion 变量可以先不填。
-3. 部署后访问 `https://你的服务名.onrender.com/health`，确认返回 `"ok": true`；再打开服务首页，输入 `APP_TOKEN`。
+3. 部署后访问 `https://你的服务名.onrender.com/health`，确认返回 `"ok": true`；再打开服务首页，输入 `APP_TOKEN`。此健康检查也支持 UptimeRobot 免费版默认的 HEAD 请求。
 
 详细步骤见 [Render 部署说明](RENDER-DEPLOY.md)。
 
@@ -62,6 +62,20 @@ docker compose exec -T x-vault tar -czf - -C /data . > xvault-backup.tar.gz
 - 视频下载需要服务器带宽及 FFmpeg；免费服务有资源和文件大小限制。Notion 文件上传受账户额度限制。
 - `APP_TOKEN` 是整个私人服务的访问密钥，请妥善保管。网页保存的 Notion 密钥使用其派生密钥加密，因此**更换 APP_TOKEN 后需要重新保存 Notion 配置**。
 - 本项目用于保存你有权访问和使用的内容，不绕过 DRM、私密账号或付费限制。
+
+## 技术依赖与致谢
+
+感谢以下项目和服务为 X Vault 提供基础能力：
+
+- [FxEmbed / FxTwitter](https://github.com/FxEmbed/FxEmbed)：公开 X 帖子及 Thread 元数据解析（第三方服务，非 X 官方 API）。
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp)：按需视频提取与下载。
+- [FFmpeg](https://ffmpeg.org/)：视频转码和音画合并。
+- [FastAPI](https://fastapi.tiangolo.com/)：Web API 框架。
+- [Notion API](https://developers.notion.com/)：个人收藏页面同步。
+
+## 开源许可
+
+X Vault **自有代码**采用 [MIT License](LICENSE)。第三方项目、API 与软件包保留各自的许可及使用条款；尤其 FFmpeg 的许可证取决于实际构建方式。X Vault 不隶属于 X、Notion 或上述项目。
 
 ## 测试
 

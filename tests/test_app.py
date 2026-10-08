@@ -21,6 +21,10 @@ def test_api_requires_token_and_deduplicates(monkeypatch):
             worker.side_effect=idle
             with TestClient(app_mod.app) as client:
                 assert client.get('/health').status_code==200
+                assert client.get('/health').json()=={'ok': True, 'service': 'x-vault'}
+                head=client.head('/health')
+                assert head.status_code==200
+                assert head.content==b''
                 assert client.get('/api/archives').status_code==401
                 headers={'Authorization':'Bearer abcdefghij1234567890abcdefghij'}
                 body={'url':'https://x.com/test/status/123456789'}

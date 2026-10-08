@@ -14,7 +14,7 @@ import sqlite3
 import time
 
 from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -309,6 +309,12 @@ def notion_setup():
 @app.get("/health")
 def health():
     return {"ok": True, "service": "x-vault"}
+
+
+@app.head("/health", include_in_schema=False)
+def health_head():
+    """UptimeRobot free HTTP monitors send HEAD, not GET."""
+    return Response(status_code=200)
 
 
 @app.get("/")
