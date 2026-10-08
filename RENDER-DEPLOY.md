@@ -30,6 +30,23 @@ GitHub `main` 更新后，如果 Render 启用了自动部署，会自动构建�
 
 请注意 **Render Free 的本地磁盘不持久**：实例休眠、重启、重新部署或被替换时，SQLite、已下载文件及网页保存的连接都可能丢失。要持久保存请使用有持久化存储的服务；Notion 中已经写入的归档不受影响。
 
+## TikTok 视频解析下载
+
+最新版 X Vault 首页有独立的 TikTok 视频下载入口：粘贴公开视频链接或 vm/vt.tiktok.com 分享短链 → 解析 → 下载本机。视频仅短暂保留在 Render 临时目录，传输完成即删除，不保存到 Notion；新版「视频存本机」快捷指令也可从 TikTok 分享。若遇到登录、验证码、地区限制或平台限制，可能无法解析，无法绕过受保护视频；大视频尤其可能受免费实例内存和请求时间限制。
+
+## UptimeRobot 免费版监测
+
+UptimeRobot 的 **HTTP(s)** 监控默认使用 **HEAD**；X Vault 的 `/health` 已同时支持 GET 与 HEAD，两者均返回 HTTP 200，因此**不需要购买 GET 请求功能**：
+
+- Monitor Type：`HTTP(s)`
+- URL：`https://你的服务名.onrender.com/health`
+- Monitoring Interval：`5 minutes`
+- HTTP Method：保留默认 `HEAD`；无需 APP_TOKEN 或请求头
+
+也可以自己验证：`curl -I https://你的服务名.onrender.com/health` 应返回 `HTTP 200`。更新后需让 Render 部署**最新代码**才会生效。
+
+定期请求通常可减少因空闲而休眠，但并不能避免 Render 主动重启、免费额度耗尽、实例替换或本地数据丢失；**保活不等于备份**。
+
 ## 排查
 
 - **401**：检查请求头 `Authorization: Bearer APP_TOKEN` 是否正确，密钥与 Render Environment 中一致。

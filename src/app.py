@@ -23,6 +23,7 @@ from .archive import archive_post, parse_post_url
 from .video_flow import inspect_post, issue_ticket, claim_ticket
 from .notion import NotionPublisher
 from . import notion_config
+from . import tiktok as tiktok_video
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -201,6 +202,10 @@ class ShortcutInput(BaseModel):
     video_action: Literal["notion", "download"] = "notion"
 
 
+class TikTokInput(BaseModel):
+    url: str = Field(min_length=12, max_length=3500)
+
+
 def shortcut_result(row):
     status = row["status"]
     notion_url = row["notion_url"]
@@ -221,6 +226,13 @@ def shortcut_result(row):
 @app.post("/api/shortcut/save", dependencies=[Depends(require_auth)])
 async def shortcut_save(body: ShortcutInput, request: Request):
     """iOS share sheet: video download is opt-in; legacy Notion stays intact."""
+    if "tiktok.com" in body.url.lower():
+        if body.video_action != "download":
+            return {"status": "failed", "message": "⚠️ TikTok 请使用『视频存本机』快捷指令，或打开 X Vault 网页下载"}
+        try:
+            return await prepare_tiktok_video(body.url, request)
+        except HTTPException as exc:
+            return {"status": "failed", "message": "⚠️ TikTok 解析失败：" + str(exc.detail)[:220]}
     match = re.search(r"https?://(?:www\.|mobile\.)?(?:x\.com|twitter\.com)/[^\s/]+/status/\d+[^\s]*", body.url, re.I)
     try:
         tweet_id, canonical = parse_post_url(match.group(0) if match else body.url)
@@ -286,6 +298,54 @@ async def shortcut_save(body: ShortcutInput, request: Request):
         if time.monotonic() >= deadline:
             return shortcut_result(current)
         await asyncio.sleep(1)
+
+
+async def prepare_tiktok_video(text: str, request: Request):
+    """Shared TikTok preparation for browser and newer iPhone shortcuts."""
+    try:
+        safe_url = tiktok_video.parse_tiktok_url(text)
+    except tiktok_video.TikTokError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+    try:
+        preview = await asyncio.to_thread(tiktok_video.inspect_tiktok, safe_url)
+        ticket = tiktok_video.issue_tiktok_ticket(safe_url)
+    except tiktok_video.TikTokError as exc:
+        raise HTTPException(502, detail=str(exc)) from exc
+    download_url = str(request.url_for("download_tiktok_video", ticket=ticket))
+    if request.headers.get("x-forwarded-proto", "").lower() == "https" and download_url.startswith("http://"):
+        download_url = "https://" + download_url[len("http://"):]
+    return {"status": "download_ready", "preview": preview,
+            "download_url": download_url,
+            "message": "TikTok 解析完成，点击下载并保存到本机（未保存前不算成功）"}
+
+
+@app.post("/api/tiktok/prepare", dependencies=[Depends(require_auth)])
+async def tiktok_prepare(body: TikTokInput, request: Request):
+    """Parse one public TikTok video and create a short-lived download URL."""
+    return await prepare_tiktok_video(body.url, request)
+
+
+@app.get("/api/tiktok/download/{ticket}")
+def download_tiktok_video(ticket: str):
+    """Consume a one-use download capability; clean up after the response."""
+    video_url = tiktok_video.claim_tiktok_ticket(ticket)
+    if video_url is None:
+        raise HTTPException(404, detail="TikTok 下载链接已使用或超过五分钟，请重新解析")
+    cleanup_stale_transfers()
+    work = Path(tempfile.mkdtemp(prefix="transfer-tiktok-", dir=TEMP_DIR))
+    try:
+        try:
+            target = tiktok_video.download_tiktok(video_url, work, max_file_mb=MAX_FILE_MB)
+        except tiktok_video.TikTokError as exc:
+            raise HTTPException(502, detail=str(exc)) from exc
+        return FileResponse(target, filename=target.name,
+                            media_type=tiktok_video.content_type(target),
+                            headers={"Cache-Control": "private, no-store",
+                                     "X-Content-Type-Options": "nosniff"},
+                            background=BackgroundTask(shutil.rmtree, work, ignore_errors=True))
+    except Exception:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
 
 
 @app.get("/api/notion/connection", dependencies=[Depends(require_auth)])

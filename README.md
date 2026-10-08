@@ -1,10 +1,11 @@
 # X Vault
 
-把公开的 X（Twitter）帖子、Thread、图片和视频保存到自己的空间。**个人自部署、单用户使用**，支持 iPhone 快捷指令分享收藏，以及可选的 Notion 同步。
+把公开的 X（Twitter）帖子、Thread、图片，以及 TikTok 公开视频保存到自己的空间。**个人自部署、单用户使用**，支持 iPhone 快捷指令分享收藏，以及可选的 Notion 同步。
 
 - **iPhone 一键收藏**：从 X 分享到「收藏到 X Vault」，无需切换 Safari。收到「收藏完成」才表示 Notion 已写入；「正在处理」不代表完成。
 - **图文与 Thread**：解析正文和可获取的媒体；同作者 Thread 尽力还原，并非保证抓取完整。
 - **视频**：新版「视频存本机」快捷指令识别到视频后，默认下载 MP4/WebM（多视频或部分失败时保存 ZIP）到 iPhone 的「文件」；图文仍自动存 Notion。旧版快捷指令仍可选择把视频正文、封面及原帖链接存 Notion。
+- **TikTok 公开视频**：网页粘贴常规链接或 vm/vt 短链，解析后下载 MP4 等视频到设备；新版「视频存本机」iPhone 快捷指令也支持从 TikTok 分享后本地下载，不写入 Notion。不支持私密内容、图集或直播。
 - **网页连接 Notion**：填入一次内部连接密钥和收藏页面链接，后续快捷指令不用改。
 
 ## 1. 部署 X Vault
@@ -41,7 +42,13 @@
 
 使用时，在 X 帖子中打开系统分享菜单 →「收藏到 X Vault」。服务会返回「收藏完成」「正在处理」或失败原因。Notion 尚未连接时，请打开 X Vault 网页进行设置，不用改快捷指令。
 
-## 4. 不使用 Render：Docker 本地部署
+## 4. TikTok 视频解析下载
+
+打开 X Vault 网页首页的「TikTok 视频解析下载」，粘贴 `https://www.tiktok.com/@用户/video/数字ID` 或 `https://vm.tiktok.com/...` / `https://vt.tiktok.com/...` 公开视频分享链接，点击「解析视频」查看作者/标题/时长，再点「下载到本机」。服务器生成 **5 分钟有效、仅可使用一次**的临时下载链接；完成传输后清理暂存文件，不写入 Notion，也不会存入 X 收藏数据库。
+
+已安装新版「视频存本机」快捷指令的 iPhone 用户可以直接从 TikTok 分享：新版服务会识别 TikTok 并交给系统「存储文件」。如果仍用旧版 Notion 快捷指令，则会提示更换新版。TikTok 解析依赖 yt-dlp；若需要登录、存在地区限制、被封禁或风控拦截，无法保证下载成功。服务端当前单视频文件大小上限 **150 MB**（如 `MAX_FILE_MB` 更低，则以更低值为准）；大视频也可能超过 Render Free 的请求与资源限制。
+
+## 5. 不使用 Render：Docker 本地部署
 
 ```bash
 cp config.example .env
@@ -70,7 +77,7 @@ docker compose exec -T x-vault tar -czf - -C /data . > xvault-backup.tar.gz
 感谢以下项目和服务为 X Vault 提供基础能力：
 
 - [FxEmbed / FxTwitter](https://github.com/FxEmbed/FxEmbed)：公开 X 帖子及 Thread 元数据解析（第三方服务，非 X 官方 API）。
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp)：按需视频提取与下载。
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp)：X、TikTok 公开视频提取与下载。
 - [FFmpeg](https://ffmpeg.org/)：视频转码和音画合并。
 - [FastAPI](https://fastapi.tiangolo.com/)：Web API 框架。
 - [Notion API](https://developers.notion.com/)：个人收藏页面同步。

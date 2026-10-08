@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create an iPhone Shortcut which saves video locally and other posts to Notion.
+"""Create an iPhone Shortcut: X and TikTok videos locally, X text to Notion.
 
 Reuses the previously proven X Vault share-sheet POST and import questions.
 Video download is opt-in via JSON video_action=download: older installed
