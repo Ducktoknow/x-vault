@@ -121,7 +121,11 @@ def test_tiktok_preview_rejects_playlist(monkeypatch):
 
 def test_tiktok_size_limit_and_temporary_cleanup(monkeypatch):
     class YDL:
-        def __init__(self,opts): self.opts=opts
+        def __init__(self,opts):
+            self.opts=opts
+            # Regression: yt-dlp raises MaxDownloadsReached even after a
+            # successful single video when max_downloads=1 was configured.
+            assert "max_downloads" not in opts
         def __enter__(self): return self
         def __exit__(self,*args): return False
         def extract_info(self,url,download=True):

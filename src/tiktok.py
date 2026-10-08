@@ -74,7 +74,10 @@ def parse_tiktok_url(text):
 def _options(**overrides):
     data = {
         "quiet": True, "no_warnings": True, "noplaylist": True,
-        "max_downloads": 1, "socket_timeout": 15,
+        # Do not use max_downloads=1: yt-dlp raises MaxDownloadsReached
+        # even *after successfully downloading one video*, resulting in 500.
+        # Single-video URLs are enforced by parse_tiktok_url and file checks.
+        "socket_timeout": 15,
         "retries": 2, "fragment_retries": 2,
         "allowed_extractors": ["TikTok", "vm.tiktok"],
     }
