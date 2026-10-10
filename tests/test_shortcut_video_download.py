@@ -127,7 +127,7 @@ def test_signed_template_builds_with_valid_video_branch(monkeypatch):
     items = actions[1]["WFWorkflowActionParameters"]["WFJSONValues"]["Value"]["WFDictionaryFieldValueItems"]
     keys = [i["WFKey"]["Value"]["string"] for i in items]
     assert keys == ["url", "video_action"]
-    assert items[1]["WFValue"]["Value"]["string"] == "download"
+    assert items[1]["WFValue"]["Value"]["string"] == "download_only"
     assert actions[1]["WFWorkflowActionParameters"]["WFURL"].startswith("https://")
     outer_modes = [actions[i]["WFWorkflowActionParameters"]["WFControlFlowMode"] for i in (4, 16, 19)]
     inner_modes = [actions[i]["WFWorkflowActionParameters"]["WFControlFlowMode"] for i in (9, 12, 15)]

@@ -31,7 +31,7 @@ def build_video_shortcut():
     # The endpoint itself remains a literal, import-configurable HTTPS URL.
     # This avoids the broken magic URL variable seen on some iOS imports.
     entries = request["WFWorkflowActionParameters"]["WFJSONValues"]["Value"]["WFDictionaryFieldValueItems"]
-    entries.append(field("video_action", text_token("download")))
+    entries.append(field("video_action", text_token("download_only")))
 
     request_response = direct_var(output_var(
         request["WFWorkflowActionParameters"]["UUID"], "Contents of URL"))
@@ -105,7 +105,7 @@ def build_video_shortcut():
     end_if = action("conditional", WFControlFlowMode=2,
                     GroupingIdentifier=group)
 
-    workflow["WFWorkflowName"] = "收藏到 X Vault · 视频存相册"
+    workflow["WFWorkflowName"] = "X Vault · 下载视频到相册"
     workflow["WFWorkflowActions"] = [
         token_action, request, status, status_text, if_video,
         get_download_url, download_video, file_type, file_type_text,

@@ -30,23 +30,33 @@
 
 **Render 免费版建议保留备用环境变量**：`NOTION_TOKEN` 和 `NOTION_PARENT_PAGE_ID`。如果网页配置与环境变量同时存在，优先使用网页配置；当免费实例丢失本地 SQLite 后，可回退到环境变量配置。不需要在 Render 修改配置才能使用网页连接功能。
 
-## 3. 在 iPhone 的 X 中收藏
+## 3. iPhone 两个独立快捷指令（推荐）
 
-**新版推荐：视频默认保存到 iPhone「照片」相册。** 仓库 `ios/build_shortcut_video.py` 可生成新版快捷指令，运行后使用 macOS `shortcuts sign --mode anyone` 签名（需要登录 iCloud），导入时输入自己 Render 接口地址和 `APP_TOKEN`。识别到 X/TikTok MP4 视频后自动调用「存储到照片相册」；遇到 ZIP、WebM、MKV 等不支持直接存照片的文件时使用「存储文件」动作作为备用。首次使用请允许快捷指令将项目添加到照片。X 图文仍存 Notion。**文件实际保存完成前不显示成功通知**；大视频可能受 Render 网络和 iOS 快捷指令执行时间限制。
+**不需要弹出选择菜单。** 在 iPhone 的 X / TikTok 分享菜单里，按当下意图直接选其中一个：
 
-仍可继续使用原来的「收藏到 X Vault」快捷指令，它不会被后端强制变更行为：视频仍只写入 Notion 的正文、封面与原帖链接。想手动创建新版快捷指令，需要在下面原有步骤的 JSON 请求正文里额外添加 `video_action` = `download`，并根据返回的 `status=download_ready` 取 `download_url`，GET 下载后将 MP4 传给「存储到照片相册」动作，非 MP4 使用「存储文件」。新用户如果只要 Notion 收藏，也可以沿用原版：
+- **「收藏到 X Vault · 稍后看」**：X 图文、长文、视频，以及 TikTok 公开视频都保存到 Notion，不下载视频。X 视频保存正文、封面、原帖、可解析的视频 MP4/HLS 直链；TikTok 保存标题、作者、原视频、封面和可解析的 MP4 直链。
+- **「X Vault · 下载视频到相册」**：只下载 X/TikTok 视频；MP4 保存到 iPhone 相册，非 MP4（ZIP/WebM 等）保存到「文件」。对不含视频的 X 帖子明确报错，不会误收藏。
 
-1. 添加 **获取 URL 内容**：地址设为 `https://你的服务名.onrender.com/api/shortcut/save`，方法 `POST`，JSON 请求正文增加 `url`，值设为蓝色变量「快捷指令输入」。
-2. 请求头添加 `Authorization`，值为 `Bearer 你的APP_TOKEN`（Bearer 后有空格）。
-3. 添加 **获取字典值**，从上一步响应读取键 `message`；再添加 **显示通知**，内容选择这个字典值。**不添加「打开 URL」**。
+**视频 CDN 直链可能很快过期**，且有些链接需要特定请求头，不能代替稳定的原帖/视频链接；Notion 中两种链接都会保留。短视频不会被上传到 Notion，也不会被下载到 Render 的长期存储。
 
-使用时，在 X 帖子中打开系统分享菜单 →「收藏到 X Vault」。服务会返回「收藏完成」「正在处理」或失败原因。Notion 尚未连接时，请打开 X Vault 网页进行设置，不用改快捷指令。
+仓库提供两个快捷指令的生成脚本：`ios/build_shortcut_later.py` 和 `ios/build_shortcut_video.py`。在 Mac 项目根目录运行：
+
+```bash
+python3 ios/build_shortcut_later.py
+python3 ios/build_shortcut_video.py
+shortcuts sign --mode anyone --input ios/X-Vault-Read-Later.unsigned.shortcut --output ios/X-Vault-Read-Later.shortcut
+shortcuts sign --mode anyone --input ios/X-Vault-Video-Photos.unsigned.shortcut --output ios/X-Vault-Video-Photos.shortcut
+```
+
+通过 AirDrop 将两个已签名 `.shortcut` 发送到 iPhone，分别导入。导入时都要填写自己的 Render 接口 `https://你的服务名.onrender.com/api/shortcut/save` 和 `APP_TOKEN`（仅输入密钥，不加 `Bearer`）。文件不提交 GitHub，避免泄露个人 Token。
+
+旧版「收藏到 X Vault」「视频存本机」快捷指令继续可用，但想要清晰区分下载和收藏，建议使用上述两个新入口。**首次给 TikTok 收藏时应确认 Notion 连接正常。** Render Free 的 SQLite 重置后，可通过 `NOTION_TOKEN` / `NOTION_PARENT_PAGE_ID` 环境变量回退。
 
 ## 4. TikTok 视频解析下载
 
 打开 X Vault 网页首页的「TikTok 视频解析下载」，粘贴 `https://www.tiktok.com/@用户/video/数字ID` 或 `https://vm.tiktok.com/...` / `https://vt.tiktok.com/...` 公开视频分享链接，点击「解析视频」查看作者/标题/时长，再点「下载到本机」。服务器生成 **5 分钟有效、仅可使用一次**的临时下载链接；完成传输后清理暂存文件，不写入 Notion，也不会存入 X 收藏数据库。
 
-已安装新版「视频存相册」快捷指令的 iPhone 用户可以直接从 TikTok 分享：新版服务会识别 TikTok，并将 MP4 交给系统「照片」相册；非 MP4 保存到「文件」。如果仍用旧版 Notion 快捷指令，则会提示更换新版。TikTok 解析依赖 yt-dlp；若需要登录、存在地区限制、被封禁或风控拦截，无法保证下载成功。服务端当前单视频文件大小上限 **150 MB**（如 `MAX_FILE_MB` 更低，则以更低值为准）；大视频也可能超过 Render Free 的请求与资源限制。
+已安装「下载视频到相册」快捷指令的 iPhone 用户可以直接从 TikTok 分享并下载；若只想以后再看，则选「收藏到稍后看」，不会下载视频。如果仍用旧版 Notion 快捷指令，则会提示更换新版。TikTok 解析依赖 yt-dlp；若需要登录、存在地区限制、被封禁或风控拦截，无法保证下载成功。服务端当前单视频文件大小上限 **150 MB**（如 `MAX_FILE_MB` 更低，则以更低值为准）；大视频也可能超过 Render Free 的请求与资源限制。
 
 ## 5. 不使用 Render：Docker 本地部署
 

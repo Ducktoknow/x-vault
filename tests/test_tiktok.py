@@ -103,8 +103,8 @@ def test_tiktok_shortcut_share_keeps_x_notion_untouched(monkeypatch):
                 assert "/api/tiktok/download/" in dl["download_url"]
                 old = c.post("/api/shortcut/save", headers=AUTH,
                              json={"url":TIKTOK}).json()
-                assert old["status"] == "failed"
-                assert "视频存本机" in old["message"]
+                assert old["status"] == "setup_required"
+                assert "Notion" in old["message"]
 
 
 def test_tiktok_preview_rejects_playlist(monkeypatch):

@@ -104,7 +104,18 @@ def inspect_tiktok(url):
     duration = info.get("duration")
     if not isinstance(duration, (int, float)) or duration < 0:
         duration = None
+    video_formats = [f for f in (info.get("formats") or [])
+                     if isinstance(f, dict) and f.get("ext") == "mp4"
+                     and f.get("vcodec") not in (None, "none")
+                     and isinstance(f.get("url"), str)
+                     and f["url"].startswith("https://")]
+    video_formats.sort(key=lambda f: (int(f.get("height") or 0),
+                                      int(f.get("tbr") or 0)), reverse=True)
+    direct_urls = list(dict.fromkeys(f["url"] for f in video_formats))[:3]
+    if not direct_urls and str(info.get("url") or "").startswith("https://"):
+        direct_urls = [info["url"]]
     return {
+        "video_urls": direct_urls,
         "id": video_id, "title": str(info.get("title") or info.get("description") or "TikTok 视频")[:140],
         "author": str(info.get("uploader") or info.get("creator") or "")[:100],
         "duration": round(duration) if duration is not None else None,

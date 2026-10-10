@@ -199,7 +199,7 @@ class ShortcutInput(BaseModel):
     url: str = Field(min_length=15, max_length=3000)
     # New shortcut opts into direct iPhone video downloads. The original
     # shortcut (which omits this field) keeps its established Notion behavior.
-    video_action: Literal["notion", "download"] = "notion"
+    video_action: Literal["notion", "download", "download_only"] = "notion"
 
 
 class TikTokInput(BaseModel):
@@ -227,12 +227,12 @@ def shortcut_result(row):
 async def shortcut_save(body: ShortcutInput, request: Request):
     """iOS share sheet: video download is opt-in; legacy Notion stays intact."""
     if "tiktok.com" in body.url.lower():
-        if body.video_action != "download":
-            return {"status": "failed", "message": "⚠️ TikTok 请使用『视频存本机』快捷指令，或打开 X Vault 网页下载"}
         try:
-            return await prepare_tiktok_video(body.url, request)
+            if body.video_action in ("download", "download_only"):
+                return await prepare_tiktok_video(body.url, request)
+            return await bookmark_tiktok_video(body.url)
         except HTTPException as exc:
-            return {"status": "failed", "message": "⚠️ TikTok 解析失败：" + str(exc.detail)[:220]}
+            return {"status": "failed", "message": "⚠️ TikTok 处理失败：" + str(exc.detail)[:220]}
     match = re.search(r"https?://(?:www\.|mobile\.)?(?:x\.com|twitter\.com)/[^\s/]+/status/\d+[^\s]*", body.url, re.I)
     try:
         tweet_id, canonical = parse_post_url(match.group(0) if match else body.url)
@@ -252,7 +252,9 @@ async def shortcut_save(body: ShortcutInput, request: Request):
         info = await asyncio.to_thread(inspect_post, tweet_id)
     except Exception as exc:
         return {"status": "failed", "message": "⚠️ 帖子解析失败：" + str(exc)[:180]}
-    if info["has_video"] and body.video_action == "download":
+    if body.video_action == "download_only" and not info["has_video"]:
+        return {"status": "failed", "message": "⚠️ 此 X 帖子没有视频。请使用『收藏到稍后看』快捷指令"}
+    if info["has_video"] and body.video_action in ("download", "download_only"):
         # Temporary single-use link lets Shortcuts fetch the actual file and
         # save it on the iPhone; a server response cannot save a phone file.
         try:
@@ -298,6 +300,26 @@ async def shortcut_save(body: ShortcutInput, request: Request):
         if time.monotonic() >= deadline:
             return shortcut_result(current)
         await asyncio.sleep(1)
+
+
+async def bookmark_tiktok_video(text: str):
+    """A TikTok bookmark never downloads or stores the video binary."""
+    token, parent, _ = notion_credentials()
+    if not token or not parent:
+        return {"status": "setup_required", "message": "尚未连接 Notion，请在 X Vault 首页完成连接"}
+    try:
+        url = tiktok_video.parse_tiktok_url(text)
+    except tiktok_video.TikTokError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+    try:
+        preview = await asyncio.to_thread(tiktok_video.inspect_tiktok, url)
+    except tiktok_video.TikTokError as exc:
+        raise HTTPException(502, detail=str(exc)) from exc
+    try:
+        notion_url = await asyncio.to_thread(NotionPublisher(token, parent).publish_tiktok, url, preview)
+    except Exception as exc:
+        return {"status": "failed", "message": "⚠️ TikTok 未能完整收藏到 Notion：" + str(exc)[:250]}
+    return {"status": "complete", "message": "✅ TikTok 已收藏到 Notion，视频未下载", "notion_url": notion_url}
 
 
 async def prepare_tiktok_video(text: str, request: Request):

@@ -312,6 +312,11 @@ def archive_post(tweet_id: str, storage: Path, max_file_mb=1024, use_ytdlp_fallb
                           "width": medium.get("width"), "height": medium.get("height"),
                           "duration": medium.get("duration"), "download_method": None}
                 if metadata_only:
+                    # Save the actual media CDN addresses for later use, without
+                    # downloading anything. Signatures can expire at any time.
+                    choices = [v["url"] for v in choices[:3]]
+                    playlist = [v["url"] for v in hls[:1]]
+                    record["direct_urls"] = list(dict.fromkeys(choices + playlist))
                     post_data["media"].append(record)
                     continue
                 failures = []

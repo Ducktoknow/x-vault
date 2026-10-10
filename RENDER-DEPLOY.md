@@ -34,6 +34,10 @@ GitHub `main` 更新后，如果 Render 启用了自动部署，会自动构建�
 
 最新版 X Vault 首页有独立的 TikTok 视频下载入口：粘贴公开视频链接或 vm/vt.tiktok.com 分享短链 → 解析 → 下载本机。视频仅短暂保留在 Render 临时目录，传输完成即删除，不保存到 Notion；新版「视频存本机」快捷指令也可从 TikTok 分享。若遇到登录、验证码、地区限制或平台限制，可能无法解析，无法绕过受保护视频；大视频尤其可能受免费实例内存和请求时间限制。
 
+## iPhone 分享快捷指令分工
+
+本项目提供「收藏到 X Vault · 稍后看」与「X Vault · 下载视频到相册」两个入口。两者使用相同的 `POST /api/shortcut/save`，但是下载快捷指令传入 `video_action=download_only`；收藏快捷指令不传 `video_action`。TikTok 收藏现在也支持 Notion，需要 `NOTION_TOKEN`、`NOTION_PARENT_PAGE_ID` 或网页连接成功。两种直链都可能过期，因此 Notion 同时保存原帖稳定链接。
+
 ## UptimeRobot 免费版监测
 
 UptimeRobot 的 **HTTP(s)** 监控默认使用 **HEAD**；X Vault 的 `/health` 已同时支持 GET 与 HEAD，两者均返回 HTTP 200，因此**不需要购买 GET 请求功能**：

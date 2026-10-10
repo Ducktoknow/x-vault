@@ -118,6 +118,12 @@ class NotionPublisher:
                 if metadata_only:
                     if medium["kind"] == "video":
                         blocks.append(paragraph("▶️ 在 X 播放原视频", post["url"]))
+                        candidates = medium.get("direct_urls") or []
+                        for number, video_url in enumerate(candidates[:3], 1):
+                            if valid_cdn_url(video_url) and len(video_url) <= 1900:
+                                blocks.append(paragraph(f"视频解析直链 {number}（可能过期）", video_url))
+                        if candidates:
+                            blocks.append(paragraph("⚠️ 上面是视频 CDN 的临时地址，可能过期或需要平台请求头；失效后可用原帖重新解析下载。"))
                         thumbnail = medium.get("thumbnail_url") or ""
                         if valid_cdn_url(thumbnail):
                             blocks.append({"object": "block", "type": "image", "image": {
@@ -168,3 +174,28 @@ class NotionPublisher:
             # Surface partial page ID, so caller can avoid accidental duplication.
             raise RuntimeError(f"Notion 页面已创建但填充失败；页面地址 {page_url}；原因：{exc}") from exc
         return page_url, warnings
+    def publish_tiktok(self, original_url, preview):
+        """Save TikTok metadata and perishable CDN links, without media download."""
+        name = str(preview.get("title") or "TikTok 视频")[:100]
+        page_id, page_url = self.create_page("TikTok｜" + name)
+        blocks = [paragraph("原视频：" + original_url, original_url),
+                  paragraph("作者：" + str(preview.get("author") or "未知")),
+                  paragraph("视频说明：" + name)]
+        duration = preview.get("duration")
+        if duration is not None:
+            blocks.append(paragraph(f"时长：{duration} 秒"))
+        image = str(preview.get("thumbnail") or "")
+        # External Notion blocks require HTTPS and accessible image assets.
+        if image.startswith("https://") and len(image) < 1800:
+            blocks.append({"object": "block", "type": "image", "image": {
+                "type": "external", "external": {"url": image}}})
+        urls = preview.get("video_urls") or []
+        for idx, url in enumerate(urls[:3], 1):
+            if isinstance(url, str) and url.startswith("https://") and len(url) < 1900:
+                blocks.append(paragraph(f"解析视频直链 {idx}（可能过期）", url))
+        blocks.append(paragraph("⚠️ 视频直链包含平台签名，通常会过期，也可能要求特定请求头；请保留原视频链接，过期后重新解析下载。"))
+        try:
+            self.append(page_id, blocks)
+        except Exception as exc:
+            raise RuntimeError(f"Notion 页面已创建但内容写入失败；页面地址 {page_url}；原因：{exc}") from exc
+        return page_url
