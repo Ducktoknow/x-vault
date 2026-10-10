@@ -272,6 +272,9 @@ def archive_post(tweet_id: str, storage: Path, max_file_mb=1024, use_ytdlp_fallb
                     post_data["article_cover_url"] = source
             if not full:
                 errors.append(f"X Article {post_data['id']} 的完整正文未返回，仅保存了标题/摘要和原文链接")
+        elif ((not post_data["text"].strip() and not media_items(post)) or
+              re.search(r"https?://(?:www\.)?(?:x|twitter)\.com/i/article/\d+", post_data["text"])):
+            errors.append("疑似 X Article，但第三方接口未返回文章正文；仅保存原帖链接，未视为完整归档")
         for j, medium in enumerate(media_items(post), 1):
             if not isinstance(medium, dict):
                 continue

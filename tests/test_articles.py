@@ -141,3 +141,13 @@ def test_article_atomic_image_is_preserved():
     }
     _, body, complete = article_markdown(article)
     assert complete and "![文章配图](https://pbs.twimg.com/media/photo.jpg)" in body
+
+
+def test_blank_post_without_article_object_is_not_mistaken_for_complete():
+    tweet = article_fixture()
+    tweet.pop("article")
+    tweet["text"] = ""
+    with TemporaryDirectory() as tmp:
+        result = archive_post(tweet["id"], Path(tmp),
+                              fetcher=lambda _: ([tweet], True, {}))
+        assert any("疑似 X Article" in error for error in result["errors"])
