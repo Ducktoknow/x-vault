@@ -16,6 +16,9 @@ PART_SIZE = 10 * 1024 * 1024  # <20 MiB per part
 # Split them into *real* Notion image blocks at the original positions.
 ARTICLE_IMAGE_RE = re.compile(r"!\[([^\]\r\n]{0,200})\]\((https://[^)\s]+)\)")
 MAX_ARTICLE_IMAGES = 80
+# Upload small article pictures. Larger ones link to the original X CDN to
+# avoid Notion Free limits and slow uploads on free hosting.
+ARTICLE_IMAGE_UPLOAD_MAX_BYTES = 4 * 1024 * 1024
 
 
 def rt(s, link=None):
@@ -99,35 +102,49 @@ class NotionPublisher:
             self.call("PATCH", f"/blocks/{page_id}/children", json={"children": blocks[i:i+50]})
 
     def _article_image_block(self, image_url, warnings, caption="文章配图"):
-        """Permanently upload trusted X Article images into Notion.
+        """Upload small X images to Notion; show larger ones via X CDN.
 
-        External-image blocks are not reliable: X CDN links can expire or
-        Notion cannot proxy them. A successful file_upload block is owned by
-        Notion and remains visible independent of the original URL.
+        safe_file_download checks Content-Length when available, then counts
+        actual streamed bytes, enforcing a hard cap even when the server does
+        not report its content length. Files beyond the cap are never kept.
         """
-        if not valid_cdn_url(image_url):
-            warnings.append("文章包含非可信的图片地址，已跳过图片上传")
-            return paragraph("⚠️ 无法显示文章配图，请在 X 原文查看")
-        raw_suffix = Path(urlsplit(image_url).path).suffix.lower()
-        ext = raw_suffix if raw_suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"} else ".jpg"
-        try:
-            with tempfile.TemporaryDirectory(prefix="xvault-article-image-") as tmp:
-                file = Path(tmp) / ("article-image" + ext)
-                # Notion Free may only allow 5 MiB per image. Never download
-                # more than its own upload limit, and validate the bytes.
-                safe_file_download(image_url, file, max_bytes=self.max_upload_size())
-                verify_image_file(file)
-                uploaded = self.upload(file)
-                if not uploaded:
-                    raise ValueError("图片超出了当前 Notion 工作区的上传额度")
+        if not valid_cdn_url(image_url) or len(image_url) > 1800:
+            warnings.append("文章配图地址不符合 Notion 图片链接要求，已保留原图链接")
+            return paragraph("⚠️ 文章配图无法嵌入，请在 X 查看原图",
+                             image_url if valid_cdn_url(image_url) else None)
+
+        def external():
+            # External blocks show the image inline, not a Markdown URL.
             return {"object": "block", "type": "image", "image": {
-                "type": "file_upload", "file_upload": {"id": uploaded},
-                "caption": [rt(caption[:180])]}}
-        except Exception as exc:
-            warnings.append("文章配图上传 Notion 失败：" + str(exc)[:180])
-            # Retain a clickable source for diagnosis. Do not silently claim
-            # that a possibly broken external image was archived permanently.
-            return paragraph("⚠️ 图片上传失败；在 X 查看原图", image_url)
+                "type": "external", "external": {"url": image_url},
+                "caption": [rt(caption[:150] + " · X 原图外链（可能失效）")]}}
+
+        try:
+            # Notion workspace limit may be lower than our 4 MiB threshold.
+            # max_upload_size() caches the server's reported upload quota.
+            max_bytes = min(ARTICLE_IMAGE_UPLOAD_MAX_BYTES, self.max_upload_size())
+            if max_bytes <= 0:
+                return external()
+            suffix = Path(urlsplit(image_url).path).suffix.lower()
+            if suffix not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+                suffix = ".jpg"
+            with tempfile.TemporaryDirectory(prefix="xvault-small-article-img-") as folder:
+                path = Path(folder) / ("article-image" + suffix)
+                safe_file_download(image_url, path, max_bytes=max_bytes)
+                verify_image_file(path)
+                if path.stat().st_size > max_bytes:
+                    return external()
+                upload_id = self.upload(path)
+                if upload_id:
+                    return {"object": "block", "type": "image", "image": {
+                        "type": "file_upload", "file_upload": {"id": upload_id},
+                        "caption": [rt(caption[:180])]}}
+        except Exception:
+            # Oversized image (Content-Length / streaming), forbidden CDN or
+            # failed Notion upload: X CDN remains a reasonable fallback.
+            # No partial-success warning for an intentional external image.
+            pass
+        return external()
 
     def _article_body_blocks(self, text, warnings):
         """Interleave text and real image blocks, preserving Article order."""
@@ -167,7 +184,7 @@ class NotionPublisher:
                 "rich_text": [rt(f"{i}. {'引用帖 ' if post.get('is_quote') else ''}@{post.get('author_username') or 'unknown'} · {post.get('created_at') or ''}"[:180])]}})
             # X Articles contain Markdown image markers in post.text; writing
             # them as ordinary paragraphs shows URLs, not the actual pictures.
-            # A dedicated converter uploads each image to Notion at its
+            # A dedicated converter embeds each X CDN image as a real image at its
             # original position. Ordinary posts remain unchanged.
             cover = post.get("article_cover_url") or ""
             if post.get("is_article") or post.get("article_title"):

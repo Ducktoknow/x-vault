@@ -55,7 +55,7 @@ def test_article_full_body_is_archived_and_synced_to_notion():
         publisher.append = lambda page, items: blocks.extend(items)
         publisher._article_image_block = lambda url, warnings, caption="文章配图": {
             "object": "block", "type": "image", "image": {
-                "type": "file_upload", "file_upload": {"id": "mock-upload"}}}
+                "type": "external", "external": {"url": url}}}
         publisher.publish(archive, Path(tmp), metadata_only=False)
         assert "文章正文示例" in created[0]
         combined = "".join(
@@ -177,7 +177,7 @@ def test_article_embedded_images_are_real_notion_blocks_in_order():
     def image_block(url, warnings, caption="文章配图"):
         calls.append(url)
         return {"object": "block", "type": "image", "image": {
-            "type": "file_upload", "file_upload": {"id": f"uploaded-{len(calls)}"}}}
+            "type": "external", "external": {"url": url}}}
     pub._article_image_block = image_block
     text = ("第一段\n\n![文章配图](https://pbs.twimg.com/media/first.jpg)\n\n"
             "第二段\n\n![文章配图](https://pbs.twimg.com/media/second.jpg)\n\n最后一段")
@@ -188,15 +188,78 @@ def test_article_embedded_images_are_real_notion_blocks_in_order():
     assert len(calls) == 2 and not warnings
 
 
-def test_article_image_upload_failure_does_not_claim_success(monkeypatch):
+def test_article_image_large_uses_external_and_no_upload(monkeypatch):
+    from src.notion import NotionPublisher, ARTICLE_IMAGE_UPLOAD_MAX_BYTES
+    from src import notion as mod
+    pub = NotionPublisher("fake", "parent")
+    monkeypatch.setattr(pub, "max_upload_size", lambda: 5*1024*1024)
+    monkeypatch.setattr(pub, "upload", lambda *_: (_ for _ in ()).throw(AssertionError("must not upload large image")))
+    def too_large(url, dest, max_bytes, **kwargs):
+        assert max_bytes == ARTICLE_IMAGE_UPLOAD_MAX_BYTES
+        # safe_file_download enforces this even when Content-Length is absent.
+        raise ValueError("media file is too large")
+    monkeypatch.setattr(mod, "safe_file_download", too_large)
+    warnings=[]
+    url="https://pbs.twimg.com/media/real-large.jpg"
+    result=pub._article_image_block(url,warnings)
+    assert result["image"]["type"] == "external"
+    assert result["image"]["external"]["url"] == url
+    assert not warnings
+
+
+def test_article_image_small_is_uploaded_to_notion(monkeypatch):
+    from src.notion import NotionPublisher, ARTICLE_IMAGE_UPLOAD_MAX_BYTES
+    from src import notion as mod
+    pub=NotionPublisher("fake","parent")
+    monkeypatch.setattr(pub,"max_upload_size",lambda:5*1024*1024)
+    def fake_small(url,dest,max_bytes,**kwargs):
+        assert max_bytes==ARTICLE_IMAGE_UPLOAD_MAX_BYTES
+        dest.write_bytes(b"\xff\xd8\xff" + b"a" * 1024)
+    monkeypatch.setattr(mod,"safe_file_download",fake_small)
+    monkeypatch.setattr(mod,"verify_image_file",lambda p: None)
+    calls=[]
+    def fake_upload(path):
+        calls.append(path.read_bytes())
+        return "uploaded-id"
+    monkeypatch.setattr(pub,"upload",fake_upload)
+    warnings=[]
+    result=pub._article_image_block("https://pbs.twimg.com/media/photo.jpg",warnings)
+    assert result["image"]["type"] == "file_upload"
+    assert result["image"]["file_upload"]["id"] == "uploaded-id"
+    assert len(calls)==1 and not warnings
+
+
+def test_article_image_workspace_limit_used_as_bound(monkeypatch):
+    from src.notion import NotionPublisher
+    from src import notion as mod
+    pub=NotionPublisher("fake","parent")
+    monkeypatch.setattr(pub,"max_upload_size",lambda: 2*1024*1024)
+    def too_large(url,dest,max_bytes,**kwargs):
+        assert max_bytes == 2*1024*1024
+        raise ValueError("exceeds Notion workspace limit")
+    monkeypatch.setattr(mod,"safe_file_download",too_large)
+    warnings=[]
+    result=pub._article_image_block("https://pbs.twimg.com/media/test.jpg",warnings)
+    assert result["image"]["type"]=="external"
+    assert not warnings
+
+
+def test_article_image_upload_error_falls_back_to_original_link(monkeypatch):
+    from src.notion import NotionPublisher
+    from src import notion as mod
+    pub=NotionPublisher("fake","parent")
+    monkeypatch.setattr(pub,"max_upload_size",lambda: 5*1024*1024)
+    monkeypatch.setattr(mod,"safe_file_download",lambda url,dest,max_bytes,**kw: dest.write_bytes(b"\xff\xd8\xffabc"))
+    monkeypatch.setattr(mod,"verify_image_file",lambda p: None)
+    monkeypatch.setattr(pub,"upload",lambda path: (_ for _ in ()).throw(RuntimeError("Notion upload unavailable")))
+    result=pub._article_image_block("https://pbs.twimg.com/media/test.jpg",[])
+    assert result["image"]["type"]=="external"
+
+
+def test_article_image_invalid_external_falls_back_to_text():
     from src.notion import NotionPublisher
     pub = NotionPublisher("fake", "parent")
-    monkeypatch.setattr(pub, "max_upload_size", lambda: 10000)
-    from src import notion as mod
-    def rejected(*args, **kwargs):
-        raise ValueError("模拟 CDN 下载失败")
-    monkeypatch.setattr(mod, "safe_file_download", rejected)
-    warnings=[]
-    block=pub._article_image_block("https://pbs.twimg.com/media/real.jpg", warnings)
+    warnings = []
+    block = pub._article_image_block("https://evil.example/path.jpg", warnings)
     assert block["type"] == "paragraph"
-    assert warnings and "下载失败" in warnings[0]
+    assert warnings
