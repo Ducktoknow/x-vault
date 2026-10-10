@@ -53,6 +53,9 @@ def test_article_full_body_is_archived_and_synced_to_notion():
                                                "https://notion.so/page-id")
         blocks = []
         publisher.append = lambda page, items: blocks.extend(items)
+        publisher._article_image_block = lambda url, warnings, caption="文章配图": {
+            "object": "block", "type": "image", "image": {
+                "type": "file_upload", "file_upload": {"id": "mock-upload"}}}
         publisher.publish(archive, Path(tmp), metadata_only=False)
         assert "文章正文示例" in created[0]
         combined = "".join(
@@ -165,3 +168,35 @@ def test_blank_video_with_media_does_not_trigger_article_lookup():
     post = {"text": "", "media": {"all": [
         {"type": "video", "url": "https://video.twimg.com/clip.mp4"}]}}
     assert not looks_like_article_stub(post)
+
+
+def test_article_embedded_images_are_real_notion_blocks_in_order():
+    from src.notion import NotionPublisher
+    pub = NotionPublisher("fake", "parent")
+    calls = []
+    def image_block(url, warnings, caption="文章配图"):
+        calls.append(url)
+        return {"object": "block", "type": "image", "image": {
+            "type": "file_upload", "file_upload": {"id": f"uploaded-{len(calls)}"}}}
+    pub._article_image_block = image_block
+    text = ("第一段\n\n![文章配图](https://pbs.twimg.com/media/first.jpg)\n\n"
+            "第二段\n\n![文章配图](https://pbs.twimg.com/media/second.jpg)\n\n最后一段")
+    warnings = []
+    blocks = pub._article_body_blocks(text, warnings)
+    assert [b["type"] for b in blocks] == ["paragraph", "image", "paragraph", "image", "paragraph"]
+    assert [b["paragraph"]["rich_text"][0]["text"]["content"] for b in blocks if b["type"] == "paragraph"] == ["第一段\n\n", "\n\n第二段\n\n", "\n\n最后一段"]
+    assert len(calls) == 2 and not warnings
+
+
+def test_article_image_upload_failure_does_not_claim_success(monkeypatch):
+    from src.notion import NotionPublisher
+    pub = NotionPublisher("fake", "parent")
+    monkeypatch.setattr(pub, "max_upload_size", lambda: 10000)
+    from src import notion as mod
+    def rejected(*args, **kwargs):
+        raise ValueError("模拟 CDN 下载失败")
+    monkeypatch.setattr(mod, "safe_file_download", rejected)
+    warnings=[]
+    block=pub._article_image_block("https://pbs.twimg.com/media/real.jpg", warnings)
+    assert block["type"] == "paragraph"
+    assert warnings and "下载失败" in warnings[0]

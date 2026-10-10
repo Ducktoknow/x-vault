@@ -1,14 +1,21 @@
 """Notion page+media upload, including multipart video within workspace plan limits."""
 import math
 import mimetypes
+import re
+import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 import time
 import requests
 
-from .archive import valid_cdn_url
+from .archive import safe_file_download, valid_cdn_url, verify_image_file
 
 NOTION_VERSION = "2026-03-11"
 PART_SIZE = 10 * 1024 * 1024  # <20 MiB per part
+# FxTwitter Article MEDIA entities are preserved as Markdown image markers.
+# Split them into *real* Notion image blocks at the original positions.
+ARTICLE_IMAGE_RE = re.compile(r"!\[([^\]\r\n]{0,200})\]\((https://[^)\s]+)\)")
+MAX_ARTICLE_IMAGES = 80
 
 
 def rt(s, link=None):
@@ -91,6 +98,58 @@ class NotionPublisher:
         for i in range(0, len(blocks), 50):
             self.call("PATCH", f"/blocks/{page_id}/children", json={"children": blocks[i:i+50]})
 
+    def _article_image_block(self, image_url, warnings, caption="文章配图"):
+        """Permanently upload trusted X Article images into Notion.
+
+        External-image blocks are not reliable: X CDN links can expire or
+        Notion cannot proxy them. A successful file_upload block is owned by
+        Notion and remains visible independent of the original URL.
+        """
+        if not valid_cdn_url(image_url):
+            warnings.append("文章包含非可信的图片地址，已跳过图片上传")
+            return paragraph("⚠️ 无法显示文章配图，请在 X 原文查看")
+        raw_suffix = Path(urlsplit(image_url).path).suffix.lower()
+        ext = raw_suffix if raw_suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"} else ".jpg"
+        try:
+            with tempfile.TemporaryDirectory(prefix="xvault-article-image-") as tmp:
+                file = Path(tmp) / ("article-image" + ext)
+                # Notion Free may only allow 5 MiB per image. Never download
+                # more than its own upload limit, and validate the bytes.
+                safe_file_download(image_url, file, max_bytes=self.max_upload_size())
+                verify_image_file(file)
+                uploaded = self.upload(file)
+                if not uploaded:
+                    raise ValueError("图片超出了当前 Notion 工作区的上传额度")
+            return {"object": "block", "type": "image", "image": {
+                "type": "file_upload", "file_upload": {"id": uploaded},
+                "caption": [rt(caption[:180])]}}
+        except Exception as exc:
+            warnings.append("文章配图上传 Notion 失败：" + str(exc)[:180])
+            # Retain a clickable source for diagnosis. Do not silently claim
+            # that a possibly broken external image was archived permanently.
+            return paragraph("⚠️ 图片上传失败；在 X 查看原图", image_url)
+
+    def _article_body_blocks(self, text, warnings):
+        """Interleave text and real image blocks, preserving Article order."""
+        blocks = []
+        current = 0
+        count = 0
+        for match in ARTICLE_IMAGE_RE.finditer(text):
+            if count >= MAX_ARTICLE_IMAGES:
+                warnings.append("文章图片超过数量上限，余下图片仅保留为原链接")
+                break
+            for chunk in split_text(text[current:match.start()]):
+                if chunk.strip():
+                    blocks.append(paragraph(chunk))
+            blocks.append(self._article_image_block(match.group(2), warnings,
+                                                    caption=match.group(1) or "文章配图"))
+            current = match.end()
+            count += 1
+        for chunk in split_text(text[current:]):
+            if chunk.strip():
+                blocks.append(paragraph(chunk))
+        return blocks
+
     def publish(self, archive, archive_dir, public_base_url="", share_key="", *, on_created=None, ephemeral=False, metadata_only=False):
         first = archive["posts"][0]
         title = (first.get("article_title") or first["text"].replace("\n", " ")[:75]
@@ -106,13 +165,22 @@ class NotionPublisher:
         for i, post in enumerate(archive["posts"], 1):
             blocks.append({"object": "block", "type": "heading_2", "heading_2": {
                 "rich_text": [rt(f"{i}. {'引用帖 ' if post.get('is_quote') else ''}@{post.get('author_username') or 'unknown'} · {post.get('created_at') or ''}"[:180])]}})
-            for part in split_text(post["text"]):
-                if part:
-                    blocks.append(paragraph(part))
+            # X Articles contain Markdown image markers in post.text; writing
+            # them as ordinary paragraphs shows URLs, not the actual pictures.
+            # A dedicated converter uploads each image to Notion at its
+            # original position. Ordinary posts remain unchanged.
             cover = post.get("article_cover_url") or ""
-            if valid_cdn_url(cover):
-                blocks.append({"object": "block", "type": "image", "image": {
-                    "type": "external", "external": {"url": cover}}})
+            if post.get("is_article") or post.get("article_title"):
+                if valid_cdn_url(cover) and cover not in post["text"]:
+                    blocks.append(self._article_image_block(cover, warnings, "文章封面"))
+                blocks.extend(self._article_body_blocks(post["text"], warnings))
+            else:
+                for part in split_text(post["text"]):
+                    if part:
+                        blocks.append(paragraph(part))
+                if valid_cdn_url(cover):
+                    blocks.append({"object": "block", "type": "image", "image": {
+                        "type": "external", "external": {"url": cover}}})
             blocks.append(paragraph("在 X 打开", post["url"]))
             for medium in post["media"]:
                 if metadata_only:

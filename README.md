@@ -52,6 +52,8 @@ shortcuts sign --mode anyone --input ios/X-Vault-Video-Photos.unsigned.shortcut 
 
 旧版「收藏到 X Vault」「视频存本机」快捷指令继续可用，但想要清晰区分下载和收藏，建议使用上述两个新入口。**首次给 TikTok 收藏时应确认 Notion 连接正常。** Render Free 的 SQLite 重置后，可通过 `NOTION_TOKEN` / `NOTION_PARENT_PAGE_ID` 环境变量回退。
 
+**X Articles 配图**：从正文中的图片标记还原为真正的 Notion 图片块，尽可能按原文顺序存放，并优先上传到 Notion 存储，避免失效的外部链接。如果图片超过 Notion 工作区单文件限制或 CDN 下载失败，会留下原图链接及归档警告。已存入 Notion 的旧文章不会自动更新，需要重新归档或手动修复。
+
 ## 4. TikTok 视频解析下载
 
 打开 X Vault 网页首页的「TikTok 视频解析下载」，粘贴 `https://www.tiktok.com/@用户/video/数字ID` 或 `https://vm.tiktok.com/...` / `https://vt.tiktok.com/...` 公开视频分享链接，点击「解析视频」查看作者/标题/时长，再点「下载到本机」。服务器生成 **5 分钟有效、仅可使用一次**的临时下载链接；完成传输后清理暂存文件，不写入 Notion，也不会存入 X 收藏数据库。

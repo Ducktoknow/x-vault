@@ -258,6 +258,7 @@ def archive_post(tweet_id: str, storage: Path, max_file_mb=1024, use_ytdlp_fallb
         }
         article = post.get("article")
         if isinstance(article, dict):
+            post_data["is_article"] = True
             article_title, body, full = article_markdown(article)
             preview = str(article.get("preview_text") or "").strip()
             if article_title:
