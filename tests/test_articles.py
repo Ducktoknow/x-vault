@@ -158,3 +158,10 @@ def test_link_caption_does_not_force_an_extra_article_request():
     assert not looks_like_article_stub({"text": "随便分享一个网站 https://t.co/abc123"})
     assert looks_like_article_stub({"text": "https://t.co/abc123"})
     assert looks_like_article_stub({"text": "新文章来了 https://t.co/abc123"})
+
+
+def test_blank_video_with_media_does_not_trigger_article_lookup():
+    from src.article import looks_like_article_stub
+    post = {"text": "", "media": {"all": [
+        {"type": "video", "url": "https://video.twimg.com/clip.mp4"}]}}
+    assert not looks_like_article_stub(post)

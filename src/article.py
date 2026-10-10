@@ -132,7 +132,10 @@ def looks_like_article_stub(post):
         return False
     text = str(post.get("text") or "").strip()
     if not text:
-        return True
+        media = post.get("media") or {}
+        if not isinstance(media, dict):
+            return False
+        return not bool(media.get("all") or media.get("videos") or media.get("photos"))
     if re.search(r"https?://(?:www\.)?(?:x|twitter)\.com/i/article/\d+", text):
         return True
     short_link = r"https?://t\.co/[A-Za-z0-9]+"
