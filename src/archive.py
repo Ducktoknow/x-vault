@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from .article import article_markdown, looks_like_article_stub
+
 X_DOMAINS = {"x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"}
 USER_AGENT = "XV-Archive/1.0 (personal archival)"
 
@@ -47,6 +49,35 @@ def fetch_thread(tweet_id: str, *, session=None):
     posts, has_thread = normalize_thread(payload)
     if not posts:
         raise RuntimeError("没有获得可归档的公开帖子（可能私密、已删除或接口不可用）")
+    # A thread response may contain only a short X Article preview/link.
+    # Probe dedicated status endpoints only for likely Article wrappers.
+    focal = next((p for p in posts if str(p.get("id")) == str(tweet_id)), None)
+    if focal:
+        article = focal.get("article")
+        _, body, _ = article_markdown(article)
+        if ((isinstance(article, dict) and not body) or
+                (not (focal.get("text") or "").strip() and not media_items(focal)) or
+                looks_like_article_stub(focal)):
+            author = (focal.get("author") or {}).get("screen_name") or "i"
+            if re.fullmatch(r"[A-Za-z0-9_]{1,20}", str(author)):
+                for detail_url in (f"https://api.fxtwitter.com/{author}/status/{tweet_id}",
+                                   f"https://api.fxtwitter.com/2/status/{tweet_id}"):
+                    try:
+                        detail = s.get(detail_url, timeout=25,
+                                       headers={"User-Agent": USER_AGENT})
+                        detail.raise_for_status()
+                        data = detail.json()
+                        record = data.get("tweet") or data.get("status") or {}
+                        found = record.get("article") if isinstance(record, dict) else None
+                        if isinstance(found, dict):
+                            _, full_text, _ = article_markdown(found)
+                            if full_text or not isinstance(focal.get("article"), dict):
+                                focal["article"] = found
+                            if full_text:
+                                break
+                    except (requests.RequestException, ValueError, TypeError, KeyError):
+                        # A blocked fallback must not break ordinary posts.
+                        continue
     return posts, has_thread, payload
 
 
@@ -210,7 +241,7 @@ def archive_post(tweet_id: str, storage: Path, max_file_mb=1024, use_ytdlp_fallb
             expanded.append((post, False))
             seen.add(str(post.get("id")))
         quote = post.get("quote")
-        if isinstance(quote, dict) and quote.get("id") and quote.get("text") is not None and str(quote["id"]) not in seen:
+        if isinstance(quote, dict) and quote.get("id") and (quote.get("text") is not None or quote.get("article")) and str(quote["id"]) not in seen:
             expanded.append((quote, True))
             seen.add(str(quote["id"]))
     max_bytes = max_file_mb * 1024 * 1024
@@ -225,6 +256,22 @@ def archive_post(tweet_id: str, storage: Path, max_file_mb=1024, use_ytdlp_fallb
             "author_username": person.get("screen_name") or person.get("username") or "",
             "is_quote": is_quote, "media": [],
         }
+        article = post.get("article")
+        if isinstance(article, dict):
+            article_title, body, full = article_markdown(article)
+            preview = str(article.get("preview_text") or "").strip()
+            if article_title:
+                post_data["article_title"] = article_title
+            post_data["text"] = "\n\n".join(
+                x for x in (article_title, body if full else preview) if x
+            ) or post_data["text"]
+            cover = (article.get("cover_media") or {}).get("media_info") or {}
+            if isinstance(cover, dict):
+                source = cover.get("original_img_url") or ""
+                if valid_cdn_url(source):
+                    post_data["article_cover_url"] = source
+            if not full:
+                errors.append(f"X Article {post_data['id']} 的完整正文未返回，仅保存了标题/摘要和原文链接")
         for j, medium in enumerate(media_items(post), 1):
             if not isinstance(medium, dict):
                 continue

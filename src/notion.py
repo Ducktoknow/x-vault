@@ -93,7 +93,8 @@ class NotionPublisher:
 
     def publish(self, archive, archive_dir, public_base_url="", share_key="", *, on_created=None, ephemeral=False, metadata_only=False):
         first = archive["posts"][0]
-        title = (first["text"].replace("\n", " ")[:75] or f"X帖子 {archive['tweet_id']}").strip()
+        title = (first.get("article_title") or first["text"].replace("\n", " ")[:75]
+                 or f"X帖子 {archive['tweet_id']}").strip()
         page_id, page_url = self.create_page(f"X｜{title}")
         if on_created is not None:
             on_created(page_url)
@@ -108,6 +109,10 @@ class NotionPublisher:
             for part in split_text(post["text"]):
                 if part:
                     blocks.append(paragraph(part))
+            cover = post.get("article_cover_url") or ""
+            if valid_cdn_url(cover):
+                blocks.append({"object": "block", "type": "image", "image": {
+                    "type": "external", "external": {"url": cover}}})
             blocks.append(paragraph("在 X 打开", post["url"]))
             for medium in post["media"]:
                 if metadata_only:
