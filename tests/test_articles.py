@@ -151,3 +151,10 @@ def test_blank_post_without_article_object_is_not_mistaken_for_complete():
         result = archive_post(tweet["id"], Path(tmp),
                               fetcher=lambda _: ([tweet], True, {}))
         assert any("疑似 X Article" in error for error in result["errors"])
+
+
+def test_link_caption_does_not_force_an_extra_article_request():
+    from src.article import looks_like_article_stub
+    assert not looks_like_article_stub({"text": "随便分享一个网站 https://t.co/abc123"})
+    assert looks_like_article_stub({"text": "https://t.co/abc123"})
+    assert looks_like_article_stub({"text": "新文章来了 https://t.co/abc123"})

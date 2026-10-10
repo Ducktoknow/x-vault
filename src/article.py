@@ -127,9 +127,16 @@ def article_markdown(article):
 
 
 def looks_like_article_stub(post):
-    """Short linked posts may need an additional FxTwitter Article lookup."""
+    """Only probe status details for likely Article wrappers, not normal links."""
     if not isinstance(post, dict) or post.get("article"):
         return False
     text = str(post.get("text") or "").strip()
-    return len(text) < 380 and bool(re.search(
-        r"https?://(?:t\.co/[A-Za-z0-9]+|(?:www\.)?(?:x|twitter)\.com/i/article/\d+)", text))
+    if not text:
+        return True
+    if re.search(r"https?://(?:www\.)?(?:x|twitter)\.com/i/article/\d+", text):
+        return True
+    short_link = r"https?://t\.co/[A-Za-z0-9]+"
+    if re.fullmatch(short_link, text):
+        return True
+    return len(text) <= 380 and bool(re.search(short_link, text)) and bool(
+        re.search(r"(?:文章|长文|article)", text, flags=re.IGNORECASE))
