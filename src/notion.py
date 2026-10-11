@@ -37,9 +37,10 @@ def split_text(text, n=1800):
 
 
 class NotionPublisher:
-    def __init__(self, token, parent_page_id, session=None):
+    def __init__(self, token, parent_page_id, session=None, *, data_source_id=None):
         self.token = token
         self.parent = parent_page_id.replace("-", "")
+        self.data_source_id = data_source_id
         self.session = session or requests.Session()
         self.max_size = None
 
@@ -94,6 +95,17 @@ class NotionPublisher:
         page = self.call("POST", "/pages", json={
             "parent": {"type": "page_id", "page_id": self.parent},
             "properties": {"title": {"type": "title", "title": [rt(title[:95])]}}
+        })
+        return page["id"], page["url"]
+
+    def create_collection_page(self, title, original_url, source, content_type):
+        """Create a structured Notion database row with the existing rich body."""
+        if not self.data_source_id:
+            return self.create_page(title)
+        from .notion_database import page_properties
+        page = self.call("POST", "/pages", json={
+            "parent": {"type": "data_source_id", "data_source_id": self.data_source_id},
+            "properties": page_properties(title, source, content_type, original_url),
         })
         return page["id"], page["url"]
 
@@ -171,7 +183,10 @@ class NotionPublisher:
         first = archive["posts"][0]
         title = (first.get("article_title") or first["text"].replace("\n", " ")[:75]
                  or f"X帖子 {archive['tweet_id']}").strip()
-        page_id, page_url = self.create_page(f"X｜{title}")
+        item_type = ("文章" if first.get("is_article") or first.get("article_title")
+                     else "视频" if any(m.get("kind") == "video" for post in archive["posts"]
+                                         for m in post.get("media", [])) else "帖子")
+        page_id, page_url = self.create_collection_page(f"X｜{title}", archive["source"], "X", item_type)
         if on_created is not None:
             on_created(page_url)
         warnings = []
@@ -262,7 +277,7 @@ class NotionPublisher:
     def publish_tiktok(self, original_url, preview):
         """Save TikTok metadata and perishable CDN links, without media download."""
         name = str(preview.get("title") or "TikTok 视频")[:100]
-        page_id, page_url = self.create_page("TikTok｜" + name)
+        page_id, page_url = self.create_collection_page("TikTok｜" + name, original_url, "TikTok", "视频")
         blocks = [paragraph("原视频：" + original_url, original_url),
                   paragraph("作者：" + str(preview.get("author") or "未知")),
                   paragraph("视频说明：" + name)]

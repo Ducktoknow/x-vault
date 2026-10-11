@@ -23,6 +23,7 @@ from .archive import archive_post, parse_post_url
 from .video_flow import inspect_post, issue_ticket, claim_ticket
 from .notion import NotionPublisher
 from . import notion_config
+from . import notion_database
 from . import tiktok as tiktok_video
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
@@ -66,6 +67,7 @@ def init_db():
             db.execute("ALTER TABLE archives ADD COLUMN delivery TEXT NOT NULL DEFAULT 'archive'")
         db.execute("UPDATE archives SET status='queued' WHERE status='running'")
         notion_config.init_tables(db)
+        notion_database.init_table(db)
 
 
 def row_dict(r):
@@ -81,6 +83,12 @@ def require_auth(request: Request):
     bearer = request.headers.get("Authorization", "")
     if not APP_TOKEN or not hmac.compare_digest(bearer, "Bearer " + APP_TOKEN):
         raise HTTPException(status_code=401, detail="请先填写个人 API Token")
+
+
+def collection_data_source_id():
+    with conn() as db:
+        entry = notion_database.read(db)
+        return entry["data_source_id"] if entry else None
 
 
 def notion_credentials():
@@ -127,7 +135,8 @@ def process_one(tweet_id):
 
                         if not notion_url:
                             def send_to_notion(access_token):
-                                return NotionPublisher(access_token, notion_parent).publish(
+                                return NotionPublisher(access_token, notion_parent,
+                                                       data_source_id=collection_data_source_id()).publish(
                                     archive, Path(storage) / "archives" / tweet_id,
                                     "" if ephemeral else PUBLIC_BASE_URL, row["share_key"],
                                     on_created=remember_created_page, ephemeral=ephemeral,
@@ -316,7 +325,8 @@ async def bookmark_tiktok_video(text: str):
     except tiktok_video.TikTokError as exc:
         raise HTTPException(502, detail=str(exc)) from exc
     try:
-        notion_url = await asyncio.to_thread(NotionPublisher(token, parent).publish_tiktok, url, preview)
+        notion_url = await asyncio.to_thread(NotionPublisher(
+            token, parent, data_source_id=collection_data_source_id()).publish_tiktok, url, preview)
     except Exception as exc:
         return {"status": "failed", "message": "⚠️ TikTok 未能完整收藏到 Notion：" + str(exc)[:250]}
     return {"status": "complete", "message": "✅ TikTok 已收藏到 Notion，视频未下载", "notion_url": notion_url}
@@ -376,9 +386,17 @@ def notion_connection_status():
     with conn() as db:
         saved = notion_config.read_settings(db)
     if saved:
-        return {"connected": True, "mode": "saved", "page_title": saved["page_title"]}
+        with conn() as db:
+            collection = notion_database.read(db)
+        return {"connected": True, "mode": "saved", "page_title": saved["page_title"],
+                "database_ready": bool(collection),
+                "database_url": collection["database_url"] if collection else None}
     if NOTION_TOKEN and NOTION_PARENT_PAGE_ID:
-        return {"connected": True, "mode": "environment", "page_title": "已通过环境变量配置"}
+        with conn() as db:
+            collection = notion_database.read(db)
+        return {"connected": True, "mode": "environment", "page_title": "已通过环境变量配置",
+                "database_ready": bool(collection),
+                "database_url": collection["database_url"] if collection else None}
     return {"connected": False, "mode": "none", "page_title": ""}
 
 
@@ -394,16 +412,64 @@ def notion_configure(body: NotionSettingsInput):
         page_id = notion_config.parse_page_id(body.page_url)
         title = notion_config.validate_page(body.token.strip(), page_id)
         with conn() as db:
+            existing = notion_config.read_settings(db)
+            if existing:
+                previous_token = notion_config.decrypt_token(APP_TOKEN, existing["token_encrypted"])
+                if existing["page_id"] != page_id or previous_token != body.token.strip():
+                    # A different Notion Integration might not have database
+                    # permission even when the parent page is accessible.
+                    notion_database.clear(db)
             notion_config.save_settings(db, APP_TOKEN, body.token.strip(), page_id, title)
     except notion_config.NotionSetupError as exc:
         raise HTTPException(400, detail=str(exc)) from exc
-    return {"connected": True, "page_title": title, "message": "Notion 已连接，之后可以直接从 X 分享收藏"}
+    return {"connected": True, "page_title": title,
+            "message": "Notion 已连接，请点击『一键创建收藏数据库』启用数据库保存"}
+
+
+@app.post("/api/notion/database/initialize", dependencies=[Depends(require_auth)])
+def notion_database_initialize():
+    """Create database only on an explicit authenticated click; no migration."""
+    token, parent, _ = notion_credentials()
+    if not token or not parent:
+        raise HTTPException(409, detail="请先连接 Notion 并配置普通父页面")
+    try:
+        created, is_new = notion_database.ensure_initialized(conn, token, parent)
+    except ValueError as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, detail=str(exc)[:330]) from exc
+    except Exception as exc:
+        # Do not echo Notion authorization headers or secret-bearing payloads.
+        raise HTTPException(502, detail="创建 Notion 收藏库失败，请检查连接的 Insert content 权限及页面访问权限") from exc
+    return {"created": is_new, "database_url": created["database_url"],
+            "database_ready": True,
+            "message": "X Vault 收藏数据库创建成功" if is_new else "收藏数据库已经初始化，无需重复创建"}
+
+
+class DatabaseReconnectInput(BaseModel):
+    database_url: str = Field(min_length=24, max_length=2048)
+
+
+@app.post("/api/notion/database/reconnect", dependencies=[Depends(require_auth)])
+def notion_database_reconnect(body: DatabaseReconnectInput):
+    token, parent, _ = notion_credentials()
+    if not token or not parent:
+        raise HTTPException(409, detail="请先连接 Notion 并选择普通父页面")
+    try:
+        result = notion_database.reconnect(conn, token, parent, body.database_url)
+    except notion_config.NotionSetupError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, detail="无法验证已有数据库，请检查链接、授权或 Notion 服务状态") from exc
+    return {"database_ready": True, "database_url": result["database_url"],
+            "message": "已有 X Vault 收藏库连接成功"}
 
 
 @app.post("/api/notion/disconnect", dependencies=[Depends(require_auth)])
 def notion_disconnect():
     with conn() as db:
         db.execute("DELETE FROM notion_settings WHERE id=1")
+        notion_database.clear(db)
     if NOTION_TOKEN and NOTION_PARENT_PAGE_ID:
         return {"connected": True, "message": "已清除网页保存的连接；仍检测到 Render 环境变量中的 Notion 配置"}
     return {"connected": False, "message": "已断开 Notion 连接"}

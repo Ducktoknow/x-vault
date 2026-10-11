@@ -192,7 +192,7 @@ def test_web_config_is_used_by_existing_shortcut(monkeypatch):
         monkeypatch.setattr(app, "archive_post", fake_archive_post)
 
         class FakePublisher:
-            def __init__(self, token, parent):
+            def __init__(self, token, parent, **kwargs):
                 assert token == "notion-private-secret"
                 assert parent == PAGE_ID
             def publish(self, archive, archive_dir, public_base_url, share_key, *,
