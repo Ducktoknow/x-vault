@@ -63,7 +63,8 @@ def test_article_full_body_is_archived_and_synced_to_notion():
             for b in blocks if b["type"] == "paragraph"
             for rich in b["paragraph"]["rich_text"]
         )
-        assert "这是正文" in combined and "第一章" in combined
+        assert "这是正文" in combined
+        assert any(b["type"] == "heading_2" and b["heading_2"]["rich_text"][0]["text"]["content"] == "第一章" for b in blocks)
         assert any(b["type"] == "image" for b in blocks)
 
 
@@ -184,7 +185,7 @@ def test_article_embedded_images_are_real_notion_blocks_in_order():
     warnings = []
     blocks = pub._article_body_blocks(text, warnings)
     assert [b["type"] for b in blocks] == ["paragraph", "image", "paragraph", "image", "paragraph"]
-    assert [b["paragraph"]["rich_text"][0]["text"]["content"] for b in blocks if b["type"] == "paragraph"] == ["第一段\n\n", "\n\n第二段\n\n", "\n\n最后一段"]
+    assert [b["paragraph"]["rich_text"][0]["text"]["content"] for b in blocks if b["type"] == "paragraph"] == ["第一段", "第二段", "最后一段"]
     assert len(calls) == 2 and not warnings
 
 

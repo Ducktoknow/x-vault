@@ -39,7 +39,8 @@ small,.muted{color:#6c7890;font-size:13px;line-height:1.6}a{color:#4053c6}
 </form>
 <div id="status" role="status">正在读取连接状态…</div>
 <div id="connectedActions" hidden><button class="secondary" type="button" id="disconnect">断开连接</button></div>
-<div id="databaseActions" class="card" hidden><h2>第三步：创建 Notion 收藏数据库</h2><p>一键创建 X Vault 收藏库，含分类、阅读状态、来源、原文链接、AI 摘要等属性。无需配置 AI。</p><button type="button" id="initializeDatabase">一键创建收藏数据库</button><p id="databaseMessage" role="status"></p><a id="databaseLink" href="#" hidden target="_blank" rel="noopener noreferrer">打开收藏数据库 ↗</a>
+<div id="databaseActions" class="card" hidden><h2>第三步：创建 Notion 收藏数据库</h2><p>一键创建 X Vault 收藏库，含作者、阅读状态、来源、原文链接等属性，AI关键词与AI摘要排在最后。无需配置 AI。</p><button type="button" id="initializeDatabase">一键创建收藏数据库</button><p id="databaseMessage" role="status"></p><a id="databaseLink" href="#" hidden target="_blank" rel="noopener noreferrer">打开收藏数据库 ↗</a>
+<p><button class="secondary" type="button" id="upgradeDatabase" hidden>更新收藏库字段与列顺序</button></p>
 <p class="muted">已有 X Vault 收藏库？如果之前的 Render 数据被重置，不要重复创建，直接填写数据库链接恢复连接。</p>
 <form id="reconnectDatabaseForm"><label for="existingDatabaseUrl">已有数据库链接</label><input id="existingDatabaseUrl" type="text" placeholder="https://www.notion.so/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"><button class="secondary" id="reconnectDatabase" type="submit">连接已有收藏库</button></form>
 </div>
@@ -72,6 +73,7 @@ async function refresh(){
   $("connectedActions").hidden=!data.connected||data.mode==="environment";
   $("databaseActions").hidden=!data.connected;
   $("initializeDatabase").disabled=!!data.database_ready;
+  $("upgradeDatabase").hidden=!data.database_ready;
   $("initializeDatabase").textContent=data.database_ready?"收藏数据库已启用":"一键创建收藏数据库";
   $("databaseMessage").textContent=data.database_ready?"已启用数据库保存":"请点击初始化，之后新收藏自动进入数据库";
   $("databaseLink").hidden=!data.database_url;
@@ -107,6 +109,15 @@ $("initializeDatabase").onclick=async()=>{
   const data=await api("/api/notion/database/initialize",{method:"POST"});
   await refresh();$("databaseMessage").textContent=data.message;
  }catch(err){$("databaseMessage").textContent="创建失败："+err.message;button.disabled=false;}
+};
+$("upgradeDatabase").onclick=async()=>{
+ const button=$("upgradeDatabase");button.disabled=true;
+ $("databaseMessage").textContent="正在更新收藏库，保留已有内容…";
+ try{
+  const data=await api("/api/notion/database/upgrade",{method:"POST"});
+  $("databaseMessage").textContent=data.message;
+ }catch(err){$("databaseMessage").textContent="更新未完成："+err.message;}
+ finally{button.disabled=false;}
 };
 $("reconnectDatabaseForm").onsubmit=async e=>{
  e.preventDefault();const database_url=$("existingDatabaseUrl").value.trim();

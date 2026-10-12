@@ -20,17 +20,108 @@ def fields():
         return {"type": "select", "select": {"options": [{"name": name} for name in names]}}
     return {
         "标题": {"type": "title", "title": {}},
+        "作者": {"type": "rich_text", "rich_text": {}},
         "来源": select(["X", "TikTok"]),
         "内容类型": select(["文章", "帖子", "视频"]),
-        "分类": select(["AI工具", "技术开发", "产品创业", "商业", "生活", "其他"]),
-        "用途": select(["待实践", "知识参考", "观点", "其他"]),
         # Explicit manual user choice. AI must never update this field.
         "阅读状态": select(["待读", "已读", "已实践"]),
-        "关键词": {"type": "multi_select", "multi_select": {"options": []}},
-        "AI 摘要": {"type": "rich_text", "rich_text": {}},
+        "用途": select(["待实践", "知识参考", "观点", "其他"]),
+        "分类": select(["AI工具", "技术开发", "产品创业", "商业", "生活", "其他"]),
         "原文链接": {"type": "url", "url": {}},
         "收藏时间": {"type": "created_time", "created_time": {}},
+        "AI关键词": {"type": "multi_select", "multi_select": {"options": []}},
+        "AI摘要": {"type": "rich_text", "rich_text": {}},
     }
+
+
+def ensure_schema(notion, source_id):
+    """Serialize saves and upgrades that share the same service process."""
+    with _LOCK:
+        return _ensure_schema(notion, source_id)
+
+
+def _ensure_schema(notion, source_id):
+    """Add V2.1 columns and rename legacy AI fields without clearing values."""
+    source = notion.call("GET", f"/data_sources/{source_id}")
+    props = source.get("properties") or {}
+    if not props:
+        raise RuntimeError("Notion 未返回收藏库字段，无法确认数据库结构")
+    changes = {}
+    for name, old_name in (("AI关键词", "关键词"), ("AI摘要", "AI 摘要")):
+        existing = props.get(name) or props.get(old_name)
+        if existing and existing.get("type") != fields()[name]["type"]:
+            raise RuntimeError("收藏库的 " + name + " 字段类型不兼容，请先检查 Notion 字段设置")
+    for name, old_name in (("AI关键词", "关键词"), ("AI摘要", "AI 摘要")):
+        if name not in props:
+            if old_name in props:
+                old = props[old_name]
+                changes[old.get("id") or old_name] = {"name": name}
+            else:
+                changes[name] = fields()[name]
+    if "作者" not in props:
+        changes["作者"] = fields()["作者"]
+    elif props["作者"].get("type") != "rich_text":
+        raise RuntimeError("收藏库的作者字段必须是文本类型，请检查 Notion 字段设置")
+    if changes:
+        notion.call("PATCH", f"/data_sources/{source_id}", json={"properties": changes})
+        props = notion.call("GET", f"/data_sources/{source_id}").get("properties") or {}
+        if any(props.get(name, {}).get("type") != fields()[name]["type"]
+               for name in ("作者", "AI关键词", "AI摘要")):
+            raise RuntimeError("Notion 收藏库字段升级未确认成功，请稍后重试")
+    warnings = []
+    database_id = (source.get("parent") or {}).get("database_id")
+    if changes and database_id:
+        try:
+            warnings = reorder_views(notion, database_id, source_id, props)
+        except Exception:
+            warnings.append("收藏库列顺序未更新，可在 Notion 中手动调整")
+    return props, bool(changes), warnings
+
+
+
+def ordered_columns(props, existing=()):
+    """Use real property IDs; retain custom columns and their display settings."""
+    current = {item["property_id"]: item for item in existing if item.get("property_id")}
+    names = [name for name in fields() if not name.startswith("AI") and name in props]
+    names += [name for name in props if name not in names and name not in
+              ("AI关键词", "AI摘要", "关键词", "AI 摘要")]
+    names += [name for name in ("关键词", "AI 摘要", "AI关键词", "AI摘要") if name in props]
+    result = []
+    for name in names:
+        prop_id = props[name].get("id")
+        if prop_id:
+            result.append(dict(current.get(prop_id) or {"property_id": prop_id, "visible": True}))
+    # Keep view properties unknown to this source (e.g. special UI columns).
+    result += [dict(item) for item in existing
+               if item.get("property_id") not in {column["property_id"] for column in result}]
+    return result
+
+
+def reorder_views(notion, database_id, source_id, props):
+    """Reorder table columns only, preserving filters, sorts and layout settings."""
+    warnings = []
+    params = {"database_id": database_id, "page_size": 100}
+    while True:
+        page = notion.call("GET", "/views", params=params)
+        for ref in page.get("results") or []:
+            ref = ref.get("view") or ref
+            view = notion.call("GET", f"/views/{ref['id']}")
+            if view.get("type") != "table" or view.get("data_source_id") != source_id:
+                continue
+            config = view.get("configuration") or {"type": "table"}
+            columns = ordered_columns(props, config.get("properties") or [])
+            if columns and columns != config.get("properties"):
+                try:
+                    notion.call("PATCH", f"/views/{ref['id']}", json={
+                        "configuration": dict(config, type="table", properties=columns)})
+                except Exception:
+                    warnings.append("视图「" + str(view.get("name") or ref["id"]) + "」列顺序未更新，可在 Notion 中手动调整")
+        if not page.get("has_more"):
+            return warnings
+        cursor = page.get("next_cursor")
+        if not cursor or cursor == params.get("start_cursor"):
+            raise RuntimeError("Notion 视图分页未返回新的游标")
+        params["start_cursor"] = cursor
 
 
 def init_table(db):
@@ -73,6 +164,11 @@ def create(token, parent_page_id, *, publisher_factory=NotionPublisher):
     # Views are optional conveniences. The database remains usable even if the
     # Notion account denies Update content or view creation is unavailable.
     view_warnings = []
+    try:
+        props = notion.call("GET", f"/data_sources/{source_id}").get("properties") or {}
+    except Exception:
+        props = {}
+        view_warnings.append("列顺序")
     for name, property_name, value in (
         ("待阅读", "阅读状态", "待读"),
         ("待实践", "用途", "待实践"),
@@ -83,9 +179,15 @@ def create(token, parent_page_id, *, publisher_factory=NotionPublisher):
                 "database_id": dbid, "data_source_id": source_id,
                 "name": name, "type": "table",
                 "filter": {"property": property_name, "select": {"equals": value}},
+                **({"configuration": {"type": "table", "properties": ordered_columns(props)}} if props else {}),
             })
         except Exception:
             view_warnings.append(name)
+    if props:
+        try:
+            view_warnings.extend(reorder_views(notion, dbid, source_id, props))
+        except Exception:
+            view_warnings.append("默认视图列顺序")
     return {"database_id": dbid, "data_source_id": source_id,
             "view_warnings": view_warnings,
             "database_url": str(created.get("url") or "https://www.notion.so/" + dbid.replace("-", ""))}
@@ -109,10 +211,11 @@ def ensure_initialized(db_connection, token, parent_page_id, *, factory=None):
             return dict(read(db)), True
 
 
-def page_properties(title, source, content_type, original_url):
+def page_properties(title, source, content_type, original_url, author="未知"):
     """Keep user-owned classification and reading state untouched by AI."""
     return {
         "标题": {"title": [{"type": "text", "text": {"content": str(title)[:95]}}]},
+        "作者": {"rich_text": [{"type": "text", "text": {"content": str(author or "未知")[:200]}}]},
         "来源": {"select": {"name": source}},
         "内容类型": {"select": {"name": content_type}},
         "阅读状态": {"select": {"name": "待读"}},

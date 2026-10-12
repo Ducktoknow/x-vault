@@ -34,7 +34,7 @@ def test_v2_database_schema_no_ai_dependency():
     assert fields['标题']=={'type': 'title', 'title': {}}
     assert fields['阅读状态']['select']['options']==[
         {'name':'待读'},{'name':'已读'},{'name':'已实践'}]
-    assert fields['AI 摘要']=={'type': 'rich_text', 'rich_text':{}}
+    assert fields['AI摘要']=={'type': 'rich_text', 'rich_text':{}}
     assert fields['原文链接']=={'type': 'url', 'url':{}}
     assert 'AI' not in notion_database.page_properties('Hello','X','文章','https://x.com/i/status/123')
     assert notion_database.page_properties('Title','X','帖子','https://x.com/i/status/123')['阅读状态']=={'select':{'name':'待读'}}
@@ -67,6 +67,8 @@ def test_create_page_parent_is_datasource_and_manual_reading_status():
     p=NotionPublisher('notion-secret',PARENT,data_source_id=SOURCE)
     calls=[]
     def call(method,path,**kwargs):
+        if path.startswith('/data_sources/'):
+            return {'properties': notion_database.fields()}
         calls.append(kwargs['json'])
         return {'id':'page-1','url':'https://notion.so/page-1'}
     p.call=call
@@ -152,7 +154,7 @@ def test_changed_integration_token_clears_stale_datasource(monkeypatch):
 
 def test_tiktok_collection_writer_still_preserves_original_video_link():
     p=NotionPublisher('test',PARENT,data_source_id=SOURCE)
-    p.create_collection_page=lambda title,url,source,kind:(
+    p.create_collection_page=lambda title,url,source,kind,**kwargs:(
         (title,url,source,kind), 'https://notion.so/article')
     actual=[]
     p.append=lambda page,blocks: actual.extend(blocks)
@@ -172,7 +174,7 @@ def test_notions_view_failure_does_not_break_database_bootstrap():
             raise AssertionError(path)
     result=notion_database.create('test',PARENT,publisher_factory=BrokenViews)
     assert result['data_source_id']==SOURCE
-    assert result['view_warnings']==['待阅读','待实践','已读归档']
+    assert result['view_warnings']==['列顺序','待阅读','待实践','已读归档']
 
 
 def test_reconnect_existing_database_checks_parent_and_schema(monkeypatch):
@@ -245,6 +247,8 @@ def test_db_writer_end_to_end_preserves_article_body_and_properties():
     calls=[]
     def fake_call(method,path,**kwargs):
         calls.append((method,path,kwargs))
+        if path.startswith('/data_sources/'):
+            return {'properties': notion_database.fields()}
         if path=='/pages':return {'id':'new-page-id','url':'https://notion.so/new-page'}
         return {}
     pub.call=fake_call
@@ -252,8 +256,9 @@ def test_db_writer_end_to_end_preserves_article_body_and_properties():
     with TemporaryDirectory() as root:
         result,warnings=pub.publish(archive,Path(root))
     assert result=='https://notion.so/new-page' and warnings==[]
-    create=calls[0][2]['json']
+    create=next(call[2]['json'] for call in calls if call[1]=='/pages')
     assert create['parent']=={'type':'data_source_id','data_source_id':SOURCE}
+    assert create['properties']['作者']['rich_text'][0]['text']['content']=='@writer'
     assert create['properties']['内容类型']=={'select':{'name':'文章'}}
     assert create['properties']['阅读状态']=={'select':{'name':'待读'}}
     assert any('X 长文正文' in str(call) for call in calls if call[1].startswith('/blocks/'))

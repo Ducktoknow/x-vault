@@ -441,9 +441,34 @@ def notion_database_initialize():
     except Exception as exc:
         # Do not echo Notion authorization headers or secret-bearing payloads.
         raise HTTPException(502, detail="创建 Notion 收藏库失败，请检查连接的 Insert content 权限及页面访问权限") from exc
+    warnings = created.get("view_warnings") or []
+    message = "X Vault 收藏数据库创建成功" if is_new else "收藏数据库已经初始化，无需重复创建"
+    if warnings:
+        message += "；部分视图未配置完成，可重试更新列顺序或在 Notion 中手动调整"
     return {"created": is_new, "database_url": created["database_url"],
-            "database_ready": True,
-            "message": "X Vault 收藏数据库创建成功" if is_new else "收藏数据库已经初始化，无需重复创建"}
+            "database_ready": True, "warnings": warnings, "message": message}
+
+
+@app.post("/api/notion/database/upgrade", dependencies=[Depends(require_auth)])
+def notion_database_upgrade():
+    """Upgrade the bound collection in place; never create another database."""
+    token, parent, _ = notion_credentials()
+    with conn() as db:
+        collection = notion_database.read(db)
+    if not token or not parent or not collection:
+        raise HTTPException(409, detail="请先连接已有 Notion 收藏库")
+    if collection["parent_page_id"].replace("-", "") != parent.replace("-", ""):
+        raise HTTPException(409, detail="收藏父页面已改变，请重新检查数据库连接")
+    try:
+        publisher = NotionPublisher(token, parent)
+        props, changed, warnings = notion_database.ensure_schema(publisher, collection["data_source_id"])
+        if not changed:
+            warnings += notion_database.reorder_views(publisher, collection["database_id"],
+                                                      collection["data_source_id"], props)
+    except Exception as exc:
+        raise HTTPException(502, detail="收藏库升级未完成，请检查 Notion 更新内容权限和字段类型后重试") from exc
+    return {"database_ready": True, "warnings": warnings,
+            "message": "收藏库已更新为 V2.1，原有内容保留" + ("；" + "；".join(warnings) if warnings else "")}
 
 
 class DatabaseReconnectInput(BaseModel):

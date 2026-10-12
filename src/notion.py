@@ -1,7 +1,6 @@
 """Notion page+media upload, including multipart video within workspace plan limits."""
 import math
 import mimetypes
-import re
 import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -9,12 +8,10 @@ import time
 import requests
 
 from .archive import safe_file_download, valid_cdn_url, verify_image_file
+from .notion_reading import reading_blocks, author_label, thread_members, text_block
 
 NOTION_VERSION = "2026-03-11"
 PART_SIZE = 10 * 1024 * 1024  # <20 MiB per part
-# FxTwitter Article MEDIA entities are preserved as Markdown image markers.
-# Split them into *real* Notion image blocks at the original positions.
-ARTICLE_IMAGE_RE = re.compile(r"!\[([^\]\r\n]{0,200})\]\((https://[^)\s]+)\)")
 MAX_ARTICLE_IMAGES = 80
 # Upload small article pictures. Larger ones link to the original X CDN to
 # avoid Notion Free limits and slow uploads on free hosting.
@@ -43,6 +40,8 @@ class NotionPublisher:
         self.data_source_id = data_source_id
         self.session = session or requests.Session()
         self.max_size = None
+        self._schema_ready = False
+        self._schema_warnings = []
 
     def call(self, method, path, **kwargs):
         hdr = {"Authorization": f"Bearer {self.token}", "Notion-Version": NOTION_VERSION}
@@ -98,14 +97,17 @@ class NotionPublisher:
         })
         return page["id"], page["url"]
 
-    def create_collection_page(self, title, original_url, source, content_type):
+    def create_collection_page(self, title, original_url, source, content_type, *, author="未知"):
         """Create a structured Notion database row with the existing rich body."""
         if not self.data_source_id:
             return self.create_page(title)
-        from .notion_database import page_properties
+        from .notion_database import page_properties, ensure_schema
+        if not self._schema_ready:
+            _, _, self._schema_warnings = ensure_schema(self, self.data_source_id)
+            self._schema_ready = True
         page = self.call("POST", "/pages", json={
             "parent": {"type": "data_source_id", "data_source_id": self.data_source_id},
-            "properties": page_properties(title, source, content_type, original_url),
+            "properties": page_properties(title, source, content_type, original_url, author),
         })
         return page["id"], page["url"]
 
@@ -160,43 +162,59 @@ class NotionPublisher:
 
     def _article_body_blocks(self, text, warnings):
         """Interleave text and real image blocks, preserving Article order."""
-        blocks = []
-        current = 0
         count = 0
-        for match in ARTICLE_IMAGE_RE.finditer(text):
-            if count >= MAX_ARTICLE_IMAGES:
-                warnings.append("文章图片超过数量上限，余下图片仅保留为原链接")
-                break
-            for chunk in split_text(text[current:match.start()]):
-                if chunk.strip():
-                    blocks.append(paragraph(chunk))
-            blocks.append(self._article_image_block(match.group(2), warnings,
-                                                    caption=match.group(1) or "文章配图"))
-            current = match.end()
+
+        def image(url, caption):
+            nonlocal count
             count += 1
-        for chunk in split_text(text[current:]):
-            if chunk.strip():
-                blocks.append(paragraph(chunk))
-        return blocks
+            if count > MAX_ARTICLE_IMAGES:
+                if count == MAX_ARTICLE_IMAGES + 1:
+                    warnings.append("文章图片超过数量上限，余下图片仅保留为原链接")
+                return paragraph("文章配图：" + caption, url if valid_cdn_url(url) else None)
+            return self._article_image_block(url, warnings, caption)
+
+        return reading_blocks(text, image_block=image)
 
     def publish(self, archive, archive_dir, public_base_url="", share_key="", *, on_created=None, ephemeral=False, metadata_only=False):
-        first = archive["posts"][0]
+        first = next((post for post in archive["posts"] if not post.get("is_quote")), archive["posts"][0])
+        members = thread_members(archive["posts"])
+        total = len(members)
+        position = 0
         title = (first.get("article_title") or first["text"].replace("\n", " ")[:75]
                  or f"X帖子 {archive['tweet_id']}").strip()
         item_type = ("文章" if first.get("is_article") or first.get("article_title")
                      else "视频" if any(m.get("kind") == "video" for post in archive["posts"]
                                          for m in post.get("media", [])) else "帖子")
-        page_id, page_url = self.create_collection_page(f"X｜{title}", archive["source"], "X", item_type)
+        page_id, page_url = self.create_collection_page(f"X｜{title}", archive["source"], "X", item_type,
+                                                         author=author_label(first))
         if on_created is not None:
             on_created(page_url)
-        warnings = []
-        blocks = [paragraph("原帖：" + archive["source"], archive["source"]),
-                  paragraph("本收藏只包含正文、封面与原帖链接；不会下载或上传视频文件。Thread 完整性不保证。" if metadata_only else
-                            ("Thread 的完整性无法保证；视频临时处理中转完成后会从服务器删除。" if ephemeral else
-                             "Thread 的完整性无法保证；原始内容和媒体也保存在自托管服务中。"))]
-        for i, post in enumerate(archive["posts"], 1):
-            blocks.append({"object": "block", "type": "heading_2", "heading_2": {
-                "rich_text": [rt(f"{i}. {'引用帖 ' if post.get('is_quote') else ''}@{post.get('author_username') or 'unknown'} · {post.get('created_at') or ''}"[:180])]}})
+        warnings = list(self._schema_warnings)
+        blocks = [text_block("heading_1", title[:1800]),
+                  paragraph("作者：" + author_label(first)),
+                  paragraph("来源：X · " + ("Thread" if total else item_type)),
+                  paragraph("原帖：" + archive["source"], archive["source"]),
+                  paragraph("保存正文、配图、视频封面与原帖链接；视频文件不下载或上传。" if metadata_only else
+                            ("视频临时处理中转完成后会从服务器删除。" if ephemeral else
+                             "原始内容和媒体也保存在自托管服务中。"))]
+        if total:
+            blocks.append(paragraph(f"Thread：已获取 {total} 段；完整性未验证"))
+        if total or first.get("is_article") or first.get("article_title"):
+            blocks.append({"object": "block", "type": "table_of_contents", "table_of_contents": {}})
+        blocks.append({"object": "block", "type": "divider", "divider": {}})
+        for post in archive["posts"]:
+            is_article = bool(post.get("is_article") or post.get("article_title"))
+            if post.get("is_quote"):
+                blocks.append(text_block("heading_3", "引用帖 · " + author_label(post)))
+            elif total:
+                position += 1
+                blocks.append(text_block("heading_2", f"{position}/{total} · " + author_label(post)))
+            elif not is_article:
+                blocks.append(text_block("heading_2", "正文"))
+            elif post is not first:
+                blocks.append(text_block("heading_2", str(post.get("article_title") or "文章")))
+            if post.get("created_at"):
+                blocks.append(paragraph("发布于：" + str(post["created_at"])))
             # X Articles contain Markdown image markers in post.text; writing
             # them as ordinary paragraphs shows URLs, not the actual pictures.
             # A dedicated converter embeds each X CDN image as a real image at its
@@ -205,16 +223,20 @@ class NotionPublisher:
             if post.get("is_article") or post.get("article_title"):
                 if valid_cdn_url(cover) and cover not in post["text"]:
                     blocks.append(self._article_image_block(cover, warnings, "文章封面"))
-                blocks.extend(self._article_body_blocks(post["text"], warnings))
+                body = post["text"]
+                article_title = str(post.get("article_title") or "")
+                if article_title and body.startswith(article_title + "\n\n"):
+                    body = body[len(article_title) + 2:]
+                blocks.extend(self._article_body_blocks(body, warnings))
             else:
-                for part in split_text(post["text"]):
-                    if part:
-                        blocks.append(paragraph(part))
+                blocks.extend(reading_blocks(post["text"]))
                 if valid_cdn_url(cover):
                     blocks.append({"object": "block", "type": "image", "image": {
                         "type": "external", "external": {"url": cover}}})
             blocks.append(paragraph("在 X 打开", post["url"]))
             for medium in post["media"]:
+                if is_article and medium.get("kind") == "image" and medium.get("source") and medium["source"] in post["text"]:
+                    continue
                 if metadata_only:
                     if medium["kind"] == "video":
                         blocks.append(paragraph("▶️ 在 X 播放原视频", post["url"]))
@@ -277,10 +299,12 @@ class NotionPublisher:
     def publish_tiktok(self, original_url, preview):
         """Save TikTok metadata and perishable CDN links, without media download."""
         name = str(preview.get("title") or "TikTok 视频")[:100]
-        page_id, page_url = self.create_collection_page("TikTok｜" + name, original_url, "TikTok", "视频")
+        page_id, page_url = self.create_collection_page("TikTok｜" + name, original_url, "TikTok", "视频",
+                                                         author=str(preview.get("author") or "未知"))
         blocks = [paragraph("原视频：" + original_url, original_url),
                   paragraph("作者：" + str(preview.get("author") or "未知")),
                   paragraph("视频说明：" + name)]
+        blocks.extend(paragraph("⚠️ " + warning) for warning in self._schema_warnings)
         duration = preview.get("duration")
         if duration is not None:
             blocks.append(paragraph(f"时长：{duration} 秒"))

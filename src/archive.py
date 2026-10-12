@@ -2,6 +2,7 @@
 The system stores actual downloaded files, rather than trusting mutable media links.
 """
 import json
+import math
 import os
 import re
 import subprocess
@@ -34,7 +35,21 @@ def normalize_thread(payload: dict) -> tuple[list[dict], bool]:
     for item in candidates:
         if isinstance(item, dict) and item.get("id") and item.get("type", "status") == "status":
             result[str(item["id"])] = item
-    ordered = sorted(result.values(), key=lambda p: (float(p.get("created_timestamp") or 0), str(p.get("id"))))
+    def order(post):
+        post_id = str(post.get("id"))
+        numeric_id = int(post_id) if post_id.isdigit() else 0
+        try:
+            timestamp = float(post.get("created_timestamp") or 0)
+        except (ValueError, TypeError):
+            timestamp = 0
+        if not math.isfinite(timestamp):
+            timestamp = 0
+        if not timestamp and len(post_id) >= 15 and numeric_id:
+            # X Snowflake IDs carry creation time when the API omits it.
+            timestamp = (numeric_id >> 22) / 1000 + 1288834974.657
+        return timestamp, numeric_id, post_id
+
+    ordered = sorted(result.values(), key=order)
     return ordered, isinstance(payload.get("thread"), list)
 
 
